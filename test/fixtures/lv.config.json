@@ -1,0 +1,4 @@
+{
+  "_comment": "For the i18n-parity test only: everything else stays at its default, the locale is the one thing we change.",
+  "locale": "lv"
+}

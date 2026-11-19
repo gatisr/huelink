@@ -1,0 +1,8 @@
+{
+  "_comment": "Config for the breaker test. The device name is made up on purpose: the test must not ask for anyone's real house. The port differs from the default so the test never binds the one a real deployment listens on.",
+  "_startSettleMs": "Zero, not 2000. The settle window exists so MQTT echoes from a previous life can die down; a test has no previous life, and 2 s of silence would mean every case measures the settle window rather than the behaviour. See docs/TESTING.md.",
+  "device": "Test Strip",
+  "udpPort": 19448,
+  "startSettleMs": 0,
+  "locale": "en"
+}

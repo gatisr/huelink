@@ -1,0 +1,32 @@
+# The real, installation-specific settings file: the only file here that would know a
+# device name and a port. The example (huelink.config.example.json) IS tracked, because
+# without it nobody would know which fields exist.
+huelink.config.json
+
+# The deploy settings: a Home Assistant token, broker credentials and the path
+# to someone's zigbee2mqtt. .env.example IS tracked, for the same reason as
+# above.
+.env
+.env.deploy
+
+node_modules/
+npm-debug.log*
+
+# Tool output, not source. preview.png is checked in deliberately: it is what the
+# effects look like, and regenerating it needs the whole toolchain.
+tools/*.png
+!tools/preview.png
+tools/*.log
+
+# preview.html is NOT checked in, although the same command writes it. It embeds
+# every rendered frame as JSON: half a megabyte that changes wholesale whenever
+# effects.json is touched, a diff nobody can read, for a file `node
+# tools/preview.mjs` rebuilds in a second. The PNG shows the same effects and
+# stays readable in a review.
+tools/preview.html
+
+.DS_Store
+
+# Local pre-edit snapshots (snapshot.sh). Working copies of real files, so they
+# can hold installation-specific values; never publish them.
+_backups/

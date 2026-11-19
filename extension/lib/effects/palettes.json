@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "palettes": {
+    "christmas": ["#ff1208", "#2fbf3f", "#e00a22", "#0a7a28"],
+    "valentines": ["#ff0a3c", "#ff5c8a", "#ff9ec4", "#c0003c"],
+    "easter": ["#ffe9a8", "#b6f0c0", "#ffc8dd", "#c9d8ff", "#fff2cc"],
+    "midsummer": ["#061f0c", "#1f7a2e", "#ff6a00", "#ffb300", "#ffd45e"],
+    "autumn": ["#1c0600", "#6e2200", "#ff7a12", "#ffb347", "#ffd089"],
+    "flag": ["#9e1b32", "#ffffff", "#9e1b32"],
+    "halloween": ["#16001f", "#48007a", "#a82600", "#ff6a00", "#ff9d00"],
+
+    "romance": ["#ff2a10", "#ff4f6a", "#ff7fa8", "#c01848"],
+    "fairies": ["#9fe0ff", "#ffffff", "#b79dff", "#6fd8e8", "#d8e8ff"],
+    "sunset": ["#ff8a1e", "#ff4d2e", "#d4267a", "#6a1b9a", "#2a1457"],
+    "aurora": ["#0aff9d", "#00e0c8", "#2bd1ff", "#7a4dff", "#0a2a4a"],
+    "ocean": ["#02314f", "#065d8c", "#0aa5c4", "#5fe0e0", "#0a4a6a"],
+    "flame": ["#260400", "#ff2a00", "#ff6a00", "#ffa126", "#ffc866"],
+    "candle": ["#140400", "#6e2600", "#ff8a2a", "#ffb45e", "#ffd79a"],
+    "sunrise": ["#ff5a1e", "#ff8a3c", "#ffb05e", "#ffd49a", "#fff2dc"],
+    "wakeup": ["#3a0f06", "#7a2a2a", "#ff8a3c", "#ffc98a", "#fff0d0"],
+    "warm_white": ["#ff9d40", "#ffbe72", "#ffd9a8"],
+    "calm_blue": ["#0a1a3c", "#1b3a6b", "#2f5f9e"],
+    "cinema": ["#101a3c", "#1a2a52", "#0c1430"],
+
+    "disco": ["#ff0040", "#ffd400", "#00ff88", "#00b4ff", "#b400ff"],
+    "birthday": ["#ff3b6b", "#ffd166", "#5fd6ff", "#9b5cff", "#4ade80"],
+    "boxing": ["#ff0a05", "#ffffff", "#ff0a05", "#ffd0d0"],
+    "hockey": ["#9e1b32", "#ffffff", "#9e1b32", "#f0f0f0"]
+  }
+}

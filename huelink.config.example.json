@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "huelink configuration. Copy this file to your zigbee2mqtt data directory",
+    "(next to configuration.yaml) as 'huelink.config.json' and edit the values.",
+    "",
+    "Every field is optional: a missing file or a missing field falls back to the",
+    "default shown here. An INVALID value is not silent, it is reported as an",
+    "ERROR in the zigbee2mqtt log with the field name, and that one field falls",
+    "back to its default.",
+    "",
+    "JSON has no comments, so each field is described in '_fields' below and in",
+    "the README. Keys starting with '_' are ignored by the loader."
+  ],
+
+  "_fields": {
+    "device": "zigbee2mqtt friendly_name of the gradient strip. This is also the POWER switch: turning this light off stops whatever huelink was doing.",
+    "segments": "Number of gradient segments the strip addresses. The Hue Play gradient lightstrip (LCX002) has 7.",
+    "udpPort": "UDP port huelink listens on for raw RGB frames. Point your Hyperion 'udpraw' output device at this port on this host. Any free port works as long as both sides agree.",
+    "udpBind": "Address the UDP listener binds to. '0.0.0.0' means every interface, which is what a Hyperion running on another machine needs. Set it to '127.0.0.1' when Hyperion runs on this same host, and the port stops existing for the rest of the network.",
+    "udpAllowFrom": "List of IP addresses allowed to send frames, for example ['192.168.1.50']. Empty means anyone who can reach the port. A frame carries no sender identity and no password, so whoever reaches the port drives the strip; this is the list that limits that.",
+    "tickMs": "How often the loop runs, in milliseconds. This is NOT the frame rate: how many frames really go out is decided by the pacer. The loop runs more often than frames go out so that a sudden scene change is noticed immediately.",
+    "startSettleMs": "How long after startup the extension makes no decisions, so that echoes of commands from the previous process can finish arriving.",
+    "fps": "Target frame rate for sync and effects, 1 to 5. 5 is the pacer's MAX_FPS and also the ceiling this field is validated against; the occupancy budget trims the frames further if the coordinator is busy. The HA slider offers 2 to 5, because 1 fps is a deliberate hand-back of the radio rather than something to drag to by accident.",
+    "occupancyBudget": "Fraction of wall clock time (0..1) that sync is allowed to keep the Zigbee coordinator busy. Above roughly 0.4 the rest of the house starts queueing behind the strip.",
+    "sourceTtlMs": "How long a source still counts as alive after its last frame. When it expires, the strip turns off and waits for frames to come back.",
+    "name": "Last part of the MQTT topic: <base_topic>/<name> for the retained state, <base_topic>/<name>/command for commands. Commands are NOT on '/set': zigbee2mqtt's own router claims every '<base_topic>/<something>/set' topic and would look '<name>' up as a Zigbee device it has never heard of.",
+    "locale": "Language of all human-visible strings: 'en' or 'lv'. See extension/lib/i18n/."
+  },
+
+  "device": "Hue Gradient Strip",
+  "segments": 7,
+  "udpPort": 19447,
+  "udpBind": "0.0.0.0",
+  "udpAllowFrom": [],
+  "tickMs": 20,
+  "startSettleMs": 2000,
+  "fps": 5,
+  "occupancyBudget": 0.35,
+  "sourceTtlMs": 1000,
+  "name": "huelink",
+  "locale": "en"
+}

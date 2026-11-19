@@ -1,0 +1,386 @@
+{
+  "version": 3,
+  "effects": [
+    {
+      "id": "christmas",
+      "name": { "en": "Holiday: Christmas", "lv": "Svētki: Ziemassvētki" },
+      "kind": "wave",
+      "params": {
+        "palette": "christmas",
+        "bands": 1.0,
+        "cycleSeconds": 14,
+        "softness": 0.4,
+        "direction": 1,
+        "brightness": 0.92
+      }
+    },
+    {
+      "id": "newyear",
+      "name": { "en": "Holiday: New Year's Eve", "lv": "Svētki: Vecgada vakars" },
+      "kind": "burst",
+      "params": {
+        "rateHz": 1.9,
+        "decaySeconds": 0.26,
+        "riseSeconds": 0.03,
+        "spread": 0.6,
+        "peak": 2.4,
+        "hues": [45, 15, 330, 285, 200, 120, 60],
+        "saturation": 0.85,
+        "base": "#0f0820"
+      }
+    },
+    {
+      "id": "valentines",
+      "name": { "en": "Holiday: Valentine's Day", "lv": "Svētki: Valentīndiena" },
+      "kind": "pulse",
+      "params": {
+        "palette": "valentines",
+        "bpm": 58,
+        "beats": [1.0, 0.62],
+        "beatGap": 0.17,
+        "riseSeconds": 0.07,
+        "decaySeconds": 0.26,
+        "min": 0.16,
+        "spread": 0.14,
+        "brightness": 0.95
+      },
+      "preview": { "seconds": 14 }
+    },
+    {
+      "id": "easter",
+      "name": { "en": "Holiday: Easter", "lv": "Svētki: Lieldienas" },
+      "kind": "wave",
+      "params": {
+        "palette": "easter",
+        "bands": 1.0,
+        "cycleSeconds": 22,
+        "softness": 1.0,
+        "direction": 1,
+        "brightness": 0.85
+      },
+      "preview": { "seconds": 30 }
+    },
+    {
+      "id": "ligo",
+      "name": { "en": "Holiday: Midsummer", "lv": "Svētki: Jāņi" },
+      "kind": "flame",
+      "params": {
+        "palette": "midsummer",
+        "rateHz": 2.0,
+        "gustHz": 0.28,
+        "gustDepth": 0.3,
+        "depth": 0.65,
+        "min": 0.12,
+        "brightness": 1.0
+      }
+    },
+    {
+      "id": "lacplesis",
+      "name": { "en": "Holiday: Remembrance Day", "lv": "Svētki: Lāčplēša diena" },
+      "kind": "flame",
+      "params": {
+        "palette": "autumn",
+        "rateHz": 0.8,
+        "gustHz": 0.14,
+        "gustDepth": 0.2,
+        "depth": 0.7,
+        "min": 0.1,
+        "brightness": 0.85
+      },
+      "preview": { "seconds": 30 }
+    },
+    {
+      "id": "independence",
+      "name": { "en": "Holiday: Independence Day", "lv": "Svētki: Valsts svētki" },
+      "kind": "solid",
+      "params": {
+        "palette": "flag",
+        "spread": 1.0,
+        "driftSeconds": 0,
+        "brightness": 0.9
+      },
+      "proof": {
+        "minDistinct": 4,
+        "why": "The flag is carmine/white/carmine. Symmetry means segments 1 and 7 are the same colour BY DESIGN, exactly as they should be. Demanding 7 distinct colours would be demanding a wrong flag."
+      }
+    },
+    {
+      "id": "halloween",
+      "name": { "en": "Holiday: Halloween", "lv": "Svētki: Helovīns" },
+      "kind": "flame",
+      "params": {
+        "palette": "halloween",
+        "rateHz": 4.5,
+        "gustHz": 0.6,
+        "gustDepth": 0.45,
+        "depth": 0.85,
+        "min": 0.04,
+        "brightness": 1.0
+      }
+    },
+
+    {
+      "id": "romance",
+      "name": { "en": "Mood: Romance", "lv": "Noskaņa: Romantika" },
+      "kind": "breathe",
+      "params": {
+        "palette": "romance",
+        "periodSeconds": 10,
+        "phaseSpread": 0.4,
+        "min": 0.3,
+        "max": 1.0,
+        "brightness": 0.9
+      }
+    },
+    {
+      "id": "fairies",
+      "name": { "en": "Mood: Fairy Lights", "lv": "Noskaņa: Fejas" },
+      "kind": "twinkle",
+      "params": {
+        "palette": "fairies",
+        "onSeconds": [0.8, 2.4],
+        "offSeconds": [0.15, 1.8],
+        "base": "#030a16",
+        "peak": 1.0,
+        "brightness": 0.95
+      }
+    },
+    {
+      "id": "cinema",
+      "name": { "en": "Mood: Cinema", "lv": "Noskaņa: Kino" },
+      "kind": "solid",
+      "params": {
+        "palette": "cinema",
+        "spread": 0.6,
+        "driftSeconds": 0,
+        "brightness": 0.5
+      }
+    },
+    {
+      "id": "reading",
+      "name": { "en": "Mood: Reading", "lv": "Noskaņa: Lasīšana" },
+      "kind": "solid",
+      "params": {
+        "palette": "warm_white",
+        "spread": 0.35,
+        "driftSeconds": 0,
+        "brightness": 0.95
+      }
+    },
+    {
+      "id": "calm",
+      "name": { "en": "Mood: Calm", "lv": "Noskaņa: Miers" },
+      "kind": "breathe",
+      "params": {
+        "palette": "calm_blue",
+        "periodSeconds": 24,
+        "phaseSpread": 0.25,
+        "min": 0.25,
+        "max": 0.8,
+        "brightness": 0.9
+      },
+      "preview": { "seconds": 48 }
+    },
+    {
+      "id": "sunset",
+      "name": { "en": "Mood: Sunset", "lv": "Noskaņa: Saulriets" },
+      "kind": "wave",
+      "params": {
+        "palette": "sunset",
+        "bands": 0.8,
+        "cycleSeconds": 40,
+        "softness": 1.0,
+        "direction": 1,
+        "brightness": 0.9
+      },
+      "preview": { "seconds": 50 }
+    },
+    {
+      "id": "aurora",
+      "name": { "en": "Mood: Aurora", "lv": "Noskaņa: Ziemeļblāzma" },
+      "kind": "wave",
+      "params": {
+        "palette": "aurora",
+        "bands": 1.2,
+        "cycleSeconds": 26,
+        "softness": 1.0,
+        "direction": -1,
+        "brightness": 0.88
+      },
+      "preview": { "seconds": 36 }
+    },
+    {
+      "id": "bonfire",
+      "name": { "en": "Mood: Bonfire", "lv": "Noskaņa: Ugunskurs" },
+      "kind": "flame",
+      "params": {
+        "palette": "flame",
+        "rateHz": 2.8,
+        "gustHz": 0.35,
+        "gustDepth": 0.35,
+        "depth": 0.6,
+        "min": 0.15,
+        "brightness": 1.0
+      }
+    },
+    {
+      "id": "candle",
+      "name": { "en": "Mood: Candle", "lv": "Noskaņa: Svece" },
+      "kind": "flame",
+      "params": {
+        "palette": "candle",
+        "rateHz": 1.0,
+        "gustHz": 0.1,
+        "gustDepth": 0.1,
+        "depth": 0.55,
+        "min": 0.12,
+        "brightness": 0.6
+      },
+      "preview": { "seconds": 30 }
+    },
+    {
+      "id": "ocean",
+      "name": { "en": "Mood: Ocean", "lv": "Noskaņa: Okeāns" },
+      "kind": "wave",
+      "params": {
+        "palette": "ocean",
+        "bands": 1.0,
+        "cycleSeconds": 18,
+        "softness": 1.0,
+        "direction": 1,
+        "brightness": 0.9
+      },
+      "preview": { "seconds": 28 }
+    },
+    {
+      "id": "sunrise",
+      "name": { "en": "Mood: Sunrise", "lv": "Noskaņa: Rītausma" },
+      "kind": "ramp",
+      "params": {
+        "palette": "sunrise",
+        "durationSeconds": 180,
+        "from": 0.35,
+        "to": 1.0,
+        "segmentSpread": 0.12,
+        "curve": "smooth",
+        "brightness": 1.0
+      },
+      "preview": { "seconds": 210 }
+    },
+    {
+      "id": "wakeup",
+      "name": { "en": "Mood: Sunrise Alarm", "lv": "Noskaņa: Saullēkts" },
+      "kind": "ramp",
+      "params": {
+        "palette": "wakeup",
+        "durationSeconds": 900,
+        "from": 0.22,
+        "to": 1.0,
+        "segmentSpread": 0.15,
+        "curve": "smooth",
+        "brightness": 1.0
+      },
+      "preview": { "seconds": 1000 },
+      "proof": {
+        "maxDimRunSeconds": 240,
+        "why": "A 15-minute alarm ramp, measured dim for 196 s. Being dim at the start is the whole point - that is what makes it a wake-up and not a lamp. The floor is still lifted off zero (from 0.22 on a #3a0f06 ember), so the first minute is a weak ember glow rather than rounding to 0,0,0, and `visible in` still holds it to that."
+      }
+    },
+    {
+      "id": "sleep",
+      "name": { "en": "Mood: Falling Asleep", "lv": "Noskaņa: Iemigšana" },
+      "kind": "ramp",
+      "params": {
+        "palette": ["#ffb45e", "#ff6a1e", "#5a0f00"],
+        "durationSeconds": 1800,
+        "from": 0.85,
+        "to": 0.0,
+        "segmentSpread": 0.1,
+        "curve": "smooth",
+        "brightness": 1.0
+      },
+      "preview": { "seconds": 2000 },
+      "proof": {
+        "maxDimRunSeconds": 620,
+        "why": "A wind-down that ENDS at zero on purpose, measured dim for 566 s: the strip is meant to be off once you are asleep. It starts bright (from 0.85), so `visible in` still applies to it at full strength."
+      }
+    },
+
+    {
+      "id": "boxing",
+      "name": { "en": "Party: Fight Night", "lv": "Ballīte: Boksa vakars" },
+      "kind": "strobe",
+      "params": {
+        "palette": "boxing",
+        "periodSeconds": 0.5,
+        "duty": 0.16,
+        "tailSeconds": 0.05,
+        "stagger": 0.16,
+        "base": "#1a0000",
+        "brightness": 1.0
+      },
+      "preview": { "seconds": 8 }
+    },
+    {
+      "id": "disco",
+      "name": { "en": "Party: Disco", "lv": "Ballīte: Disko" },
+      "kind": "chase",
+      "params": {
+        "palette": "disco",
+        "cycleSeconds": 1.1,
+        "tail": 1.3,
+        "heads": 2,
+        "direction": 1,
+        "base": "#0c0018",
+        "peak": 1.0,
+        "brightness": 1.0
+      },
+      "preview": { "seconds": 8 }
+    },
+    {
+      "id": "hockey",
+      "name": { "en": "Party: Hockey", "lv": "Ballīte: Hokejs" },
+      "kind": "chase",
+      "params": {
+        "palette": "hockey",
+        "cycleSeconds": 1.6,
+        "tail": 1.1,
+        "heads": 1,
+        "direction": 1,
+        "base": "#1a040a",
+        "peak": 1.0,
+        "brightness": 1.0
+      },
+      "preview": { "seconds": 10 }
+    },
+    {
+      "id": "goal",
+      "name": { "en": "Party: Goal!", "lv": "Ballīte: Vārti!" },
+      "kind": "strobe",
+      "params": {
+        "palette": "hockey",
+        "periodSeconds": 0.3,
+        "duty": 0.3,
+        "tailSeconds": 0.07,
+        "stagger": 0.1,
+        "base": "#12000a",
+        "brightness": 1.0
+      },
+      "preview": { "seconds": 6 }
+    },
+    {
+      "id": "birthday",
+      "name": { "en": "Party: Birthday", "lv": "Ballīte: Dzimšanas diena" },
+      "kind": "twinkle",
+      "params": {
+        "palette": "birthday",
+        "onSeconds": [0.35, 1.0],
+        "offSeconds": [0.05, 0.5],
+        "base": "#0a0612",
+        "peak": 1.15,
+        "brightness": 1.0
+      },
+      "preview": { "seconds": 12 }
+    }
+  ]
+}

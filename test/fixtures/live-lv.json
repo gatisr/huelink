@@ -1,0 +1,120 @@
+{
+  "modeLabel": {
+    "light": "Gaisma",
+    "effect": "Efekts",
+    "sync": "Sync"
+  },
+  "fields": {
+    "huelink_version": {
+      "label": "HueLink versija",
+      "description": "Paplašinājuma versija, kas tiešām ir ielādēta. Avots ir VERSION konstante huelink.mjs."
+    },
+    "huelink_status": {
+      "label": "HueLink statuss",
+      "description": "Viena rinda par to, ko lente dara tagad. Te parādās arī ķēdes pārtraucējs ('... apturēts: lente neatbild'), kas ir vienīgais veids, kā no malas atšķirt apzināti tumšu lenti no lentes, kas neatbild."
+    },
+    "huelink_fps_real": {
+      "label": "HueLink reālie kadri",
+      "description": "Cik kadru tiešām aizgāja pēdējā 5 s logā. Mērķis ir 'Kadru griests', šis ir izpildījums."
+    },
+    "huelink_dropped": {
+      "label": "HueLink atmestie kadri",
+      "description": "Kadri, kas apzināti netika sūtīti (par maz izmaiņu + kvota logā), kopš starta. Bez šī skaitļa zems 'reālo kadru' rādījums izskatās vienādi gan tad, kad apspiešana strādā, gan tad, kad lente neatbild."
+    },
+    "huelink_mode": {
+      "label": "HueLink režīms",
+      "description": "Gaisma / Efekts / Sync. Tas pats, ko dara HA režīma izvēle; izvēle pie izslēgtas lentes to arī ieslēdz."
+    },
+    "huelink_fps": {
+      "label": "HueLink kadru griests",
+      "description": "Sync/efektu kadru mērķis. Apakšā 2, lai paliek veids, kā apzināti atdot ēteri pārējai mājai; augšā 5, jo virs tā aizņemtības budžets kadrus tāpat nogriež."
+    },
+    "huelink_delta": {
+      "label": "HueLink delta slieksnis",
+      "description": "Cik lielai krāsas izmaiņai jābūt, lai kadru būtu vērts sūtīt, % no nomērītā noklusējuma. Augstāk = mierīgāks ēteris un vairāk pakāpienu lēnās pārejās, zemāk = gludāk un dārgāk."
+    },
+    "huelink_duty": {
+      "label": "HueLink kadru kvota",
+      "description": "Cik kadru drīkst aiziet vienā 100 ms logā. Tas ir rāvienu griests: aizliedz straujai ainas maiņai izsūtīt sēriju uzreiz un uz brīdi aizslēgt koordinatoru pārējai mājai."
+    }
+  },
+  "modeValues": [
+    "Gaisma",
+    "Efekts",
+    "Sync"
+  ],
+  "effectNone": "Nav",
+  "effectNames": [
+    "Svētki: Ziemassvētki",
+    "Svētki: Vecgada vakars",
+    "Svētki: Valentīndiena",
+    "Svētki: Lieldienas",
+    "Svētki: Jāņi",
+    "Svētki: Lāčplēša diena",
+    "Svētki: Valsts svētki",
+    "Svētki: Helovīns",
+    "Noskaņa: Romantika",
+    "Noskaņa: Fejas",
+    "Noskaņa: Kino",
+    "Noskaņa: Lasīšana",
+    "Noskaņa: Miers",
+    "Noskaņa: Saulriets",
+    "Noskaņa: Ziemeļblāzma",
+    "Noskaņa: Ugunskurs",
+    "Noskaņa: Svece",
+    "Noskaņa: Okeāns",
+    "Noskaņa: Rītausma",
+    "Noskaņa: Iemigšana",
+    "Ballīte: Boksa vakars",
+    "Ballīte: Disko",
+    "Ballīte: Hokejs",
+    "Ballīte: Vārti!",
+    "Ballīte: Dzimšanas diena"
+  ],
+  "effectIds": [
+    "christmas",
+    "newyear",
+    "valentines",
+    "easter",
+    "ligo",
+    "lacplesis",
+    "independence",
+    "halloween",
+    "romance",
+    "fairies",
+    "cinema",
+    "reading",
+    "calm",
+    "sunset",
+    "aurora",
+    "bonfire",
+    "candle",
+    "ocean",
+    "sunrise",
+    "sleep",
+    "boxing",
+    "disco",
+    "hockey",
+    "goal",
+    "birthday"
+  ],
+  "status": {
+    "tripped": "Sync apturēts: lente neatbild",
+    "waitingTv": "Gaida TV",
+    "off": "Izslēgta",
+    "effect": "Efekts: Noskaņa: Fejas",
+    "sync": "Sinhronizācija ar TV",
+    "light": "Gaisma"
+  },
+  "ha": {
+    "mode": "Režīms",
+    "effect": "Efekts",
+    "effectBrightness": "Efekta spilgtums",
+    "effectSpeed": "Efekta ātrums",
+    "status": "Statuss",
+    "fpsReal": "Kadri sekundē",
+    "fps": "Sync kadru griests",
+    "occupancy": "Koordinatora noslodze"
+  },
+  "exposesAdded": "8 lauki pielikti '929002994101' (4 rakstāmi)"
+}

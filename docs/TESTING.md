@@ -9,6 +9,7 @@
 | `test/input.test.mjs` | what the extension does with values it did not choose |
 | `test/deploy.test.mjs` | which deploy settings file wins, and where the secrets are not |
 | `test/version.test.mjs` | `VERSION` and `package.json` cannot drift apart |
+| `test/tuning.test.mjs` | the defaults did not move, and the burst cannot overspend |
 
 No test needs Zigbee, a bridge, a strip, a broker or a network. A strip that does not answer is just a transport that throws; a TV that switches off is just a source that stops feeding frames.
 
@@ -97,3 +98,15 @@ The first is **precedence**. If the order is wrong, `.env.deploy` is read in ful
 The second is that **no secret reaches a command line**. `ps` shows every argument of every process to every user on the machine. Those cases read the script as text, because the thing being forbidden is a spelling: `-H "Authorization: ..."`, `-P "$..."`, and any call to the mosquitto clients that bypasses the wrappers that set `XDG_CONFIG_HOME` (a direct call would connect anonymously with nothing to show that a rule had been skipped).
 
 A last pair checks that `.env.example` and `.env.deploy.example` document only settings the script actually reads, with the list of real settings scraped from the script's own `KEY="${KEY:-...}"` lines.
+
+## `tuning.test.mjs`
+
+Making the pacer configurable added a lot of knobs, and the risk is not that one of them fails to work. It is that the file quietly changed what happens to somebody who never opened it, or that a burst turned out to be a polite name for ignoring the budget. Three classes of claim.
+
+**The defaults did not move.** Pinned three independent ways, because any one of them could pass while the behaviour changed. The constants are asserted **literally** (`assert.equal(MAX_FPS, 5)`), since comparing `DEFAULTS.fps` to `DEFAULTS.fps` would pass however the file is edited. The config layer's defaults are then compared to the pacer's, so the two copies cannot drift. And a `Pacer` built from an empty config file is compared key by key to `new Pacer()`, which is the claim an upgrading user actually cares about: a file that sets nothing changes nothing. The burst specifically is held to shipping **off**, by driving 200 alternating black and white frames (nothing but cuts) past a default pacer and asserting it never started one.
+
+**Ranges are enforced in one place.** `tune()` applies only `TUNABLE` keys, reports which ones changed, returns an empty list when asked twice, refuses `fps`, `maxFps`, `dutyCap` and `deltaScalePct` even when the file sets them, clamps what it does accept, and keeps the current value when handed a string or a `NaN`. The constructor and `tune()` are asserted to produce the same pacer from the same object, because two paths into the same state is exactly where a clamp gets forgotten on one of them. The `maxFps` cases cover the awkward one: Home Assistant restores a retained `number`, so a ceiling lowered in the file has to pull a stale higher value **down** rather than honour it.
+
+**The burst cannot spend money it does not have.** The bucket is tested as a ledger: credit accrues from elapsed time and the budget, caps at `burstCreditMs`, scales with `burstRefill`, is debited by each send's real cost, floors rather than going arbitrarily negative, and refuses a burst when empty. Then the property that matters, over 600 simulated seconds: total coordinator time spent stays below `elapsed × budget + burstCreditMs`, **and** bursts actually fired. Without that second assertion the bound would also be satisfied by a burst that never happens, which is the way this test would most plausibly lie.
+
+Two more hold the edges honest. `consistency()` is checked on three contradictory configurations and one coherent fast one, since a warning that fires when nothing is wrong gets ignored when something is. And the example config file is loaded and compared against the defaults field by field: every key documented, every description present, every value equal to the default, so the file shipped as "this changes nothing" is still true after someone edits a number in the code.

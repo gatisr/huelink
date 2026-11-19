@@ -15,14 +15,15 @@
  */
 
 import dgram from "node:dgram";
+import { statSync } from "node:fs";
 
 import { HueStream } from "./lib/huestream.mjs";
 import { Arbiter, FrameSource, MODE_EFFECT, MODE_LIGHT, MODE_OFF, MODE_SYNC, MODES } from "./lib/arbiter.mjs";
-import { CONFIG, CONFIG_ERRORS, CONFIG_PATH } from "./lib/config.mjs";
+import { CONFIG, CONFIG_ERRORS, CONFIG_FILE, CONFIG_PATH, CONFIG_WARNINGS, loadConfig } from "./lib/config.mjs";
 import { EffectEngine, loadEffects } from "./lib/effects/index.mjs";
 import { t } from "./lib/i18n/index.mjs";
 import { toFinite } from "./lib/num.mjs";
-import { Pacer, MAX_FPS } from "./lib/pacer.mjs";
+import { Pacer, TUNABLE } from "./lib/pacer.mjs";
 import { MODE_BY_LABEL, MODE_LABEL, SETTABLE_KEYS } from "./lib/huelink-ui.mjs";
 
 /**
@@ -41,7 +42,7 @@ import { MODE_BY_LABEL, MODE_LABEL, SETTABLE_KEYS } from "./lib/huelink-ui.mjs";
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 
 /**
  * When this Node process started, ISO-8601.
@@ -56,8 +57,8 @@ const STARTED_AT = new Date(Date.now() - Math.round(process.uptime() * 1000)).to
 /*
  * Config comes from outside: fields, defaults and validation in lib/config.mjs,
  * values in `huelink.config.json` next to `configuration.yaml`. The `fps`
- * default is MAX_FPS, derived from measured coordinator air time, not chosen.
- * See docs/PACING.md.
+ * default is `maxFps`, itself derived from measured coordinator air time, not
+ * chosen. See docs/PACING.md.
  *
  * Mode labels (`MODE_LABEL` / `MODE_BY_LABEL`) come from lib/huelink-ui.mjs, so
  * the HA select, the z2m enum and the `status()` line cannot drift apart.
@@ -65,6 +66,18 @@ const STARTED_AT = new Date(Date.now() - Math.round(process.uptime() * 1000)).to
 
 /** Window, in seconds, over which actually sent frames are counted. */
 const FPS_WINDOW_S = 5;
+
+/**
+ * How often `huelink.config.json` is checked for a new modification time.
+ *
+ * A poll rather than `fs.watch`, which sounds backwards and is not: the file
+ * lives in the z2m data directory, which is a bind mount, an SMB share or a
+ * container volume often enough that inotify is simply not delivered. A stat
+ * every two seconds costs nothing measurable and works on all of them. Two
+ * seconds is also about as long as a person will wait after saving a file
+ * before deciding nothing happened.
+ */
+const CONFIG_WATCH_MS = 2000;
 
 /**
  * Circuit breaker. A failed frame holds the coordinator's SRSP window for ~6 s,
@@ -127,6 +140,23 @@ const RETIRED = [
     ["sensor", "mode"],
 ];
 
+/**
+ * Modification time of the config file, or 0 when there is none.
+ *
+ * Every failure is 0 on purpose, not just ENOENT: an unreadable file and a
+ * missing one lead to the same action here, which is to keep running on the
+ * values already loaded. A text editor that writes by renaming makes the file
+ * briefly absent, and treating that half-second as an event would reload the
+ * config twice for every save.
+ */
+function configMtime() {
+    try {
+        return statSync(CONFIG_FILE).mtimeMs;
+    } catch {
+        return 0;
+    }
+}
+
 /** Hyperion udpddp starts with a 10-byte header; udpraw is colours only. */
 function parseLeds(buf, segments) {
     let body = buf;
@@ -174,8 +204,22 @@ export default class HueLink {
         };
         this.arbiter = new Arbiter(this.sources);
         this.effects = new EffectEngine({ effects: [], segments: CONFIG.segments, logger: this.logger });
-        /** Decides whether a frame is worth sending at all. See docs/PACING.md. */
-        this.pacer = new Pacer({ fps: CONFIG.fps, occupancyBudget: CONFIG.occupancyBudget });
+        /**
+         * Decides whether a frame is worth sending at all. See docs/PACING.md.
+         *
+         * Every knob comes from the config, and every one of them has a
+         * default IN THE PACER, so a file that mentions none of them builds
+         * exactly the pacer this extension has always built. `maxFps` and
+         * `dutyCap` are passed too but are not re-read later: see `TUNABLE`.
+         */
+        this.pacer = new Pacer({
+            fps: CONFIG.fps,
+            maxFps: CONFIG.maxFps,
+            maxPerWindow: CONFIG.dutyCap,
+            ...Object.fromEntries(TUNABLE.map((key) => [key, CONFIG[key]])),
+        });
+        /** `mtimeMs` of the config file when it was last read, or 0 for none. */
+        this.configStamp = 0;
         /** Output state already APPLIED to the strip (off/light/effect/sync). */
         this.output = MODE_OFF;
         this.sending = false;
@@ -244,6 +288,14 @@ export default class HueLink {
         // exactly like a working config.
         for (const problem of CONFIG_ERRORS) {
             this.logger.error(`[huelink] ${t("log.configProblem", { problem })}`);
+        }
+        // Fields that are each valid and jointly impossible. Not an error, so
+        // not `error`, but said out loud all the same: the alternative is a
+        // pacer that quietly delivers less than the file asked for, and a
+        // number that does nothing is indistinguishable from a number that
+        // does something until someone measures it. See `consistency()`.
+        for (const warning of CONFIG_WARNINGS) {
+            this.logger.warning(`[huelink] ${t("log.configWarning", { warning })}`);
         }
 
         const device = this.zigbee.resolveEntity(CONFIG.device);
@@ -354,6 +406,11 @@ export default class HueLink {
             this.timer = setInterval(() => void this.tick(), CONFIG.tickMs);
         }, CONFIG.startSettleMs);
 
+        // Watch the config file from here on. The stamp is taken first so the
+        // very first poll does not read a file nothing has touched.
+        this.configStamp = configMtime();
+        this.configTimer = setInterval(() => this.reloadConfig(), CONFIG_WATCH_MS);
+
         // Real frame rate is measured over a window, not per frame: 5 s is
         // short enough to notice a drop and long enough that one slow Zigbee
         // send does not make the number jump. This no longer drives fading;
@@ -376,6 +433,68 @@ export default class HueLink {
                 device: CONFIG.device,
             })}`,
         );
+    }
+
+    /**
+     * Re-read `huelink.config.json` and apply the pacer numbers from it.
+     *
+     * This exists because tuning is an experiment, and an experiment whose
+     * every step costs a zigbee2mqtt restart is one nobody finishes. Save the
+     * file, wait two seconds, watch the strip.
+     *
+     * ONLY `TUNABLE` is applied. That restriction is the whole safety
+     * argument: those are plain numbers, each with a clamp, each read fresh on
+     * the next frame, so swapping one mid-stream cannot leave anything half
+     * changed. `segments` would resize a buffer the stream is writing into,
+     * `udpPort` would need the socket rebound, `maxFps` would need the z2m
+     * device definition rebuilt. Those are named in the log instead, which is
+     * the honest version of applying them badly.
+     *
+     * The file is also the LOWER authority while running: `fps`, the delta
+     * threshold and the duty cap belong to whoever last touched Home
+     * Assistant, so the file sets them once at startup and is ignored here.
+     * `occupancyBudget` is the exception in the other direction, because it
+     * has no entity, only an MQTT command, and between a file a person edits
+     * and a value sent by hand once, the file is the better owner.
+     */
+    reloadConfig() {
+        const stamp = configMtime();
+        if (stamp === this.configStamp) return;
+        this.configStamp = stamp;
+        // The file went away. Nothing to apply, and clearing the values back
+        // to defaults would be a surprising reading of `rm`.
+        if (!stamp) return;
+
+        const { config, errors, warnings } = loadConfig();
+        // A typo in a live edit is the most likely kind there is: this is the
+        // path where someone is typing into a running system.
+        for (const problem of errors) {
+            this.logger.error(`[huelink] ${t("log.configProblem", { problem })}`);
+        }
+        for (const warning of warnings) {
+            this.logger.warning(`[huelink] ${t("log.configWarning", { warning })}`);
+        }
+
+        const changed = this.pacer.tune(config);
+        this.logger.info(
+            `[huelink] ${
+                changed.length
+                    ? t("log.configApplied", {
+                          fields: changed.map((key) => `${key}=${this.pacer[key]}`).join(", "),
+                      })
+                    : t("log.configSame")
+            }`,
+        );
+        // Everything else that moved, named rather than silently ignored.
+        // `CONFIG` is the snapshot this process started from, so this compares
+        // the file against what is actually running. Stringified because
+        // `udpAllowFrom` is an array and a fresh one is never `===` the old.
+        const restart = Object.keys(CONFIG).filter(
+            (key) => !TUNABLE.includes(key) && JSON.stringify(config[key]) !== JSON.stringify(CONFIG[key]),
+        );
+        if (restart.length) {
+            this.logger.warning(`[huelink] ${t("log.configRestartNeeded", { fields: restart.join(", ") })}`);
+        }
     }
 
     /**
@@ -1405,8 +1524,16 @@ export default class HueLink {
                     // numbers the hardware silently clipped; now it only shows
                     // reachable ones. The floor of 2 is a deliberate way to hand
                     // the coordinator back to the rest of the house. docs/PACING.md.
-                    min: 2,
-                    max: MAX_FPS,
+                    //
+                    // The ceiling follows `maxFps` from the config rather than
+                    // the built-in 5, for the same reason the number was 5 in
+                    // the first place: a slider should only offer what this
+                    // installation can actually deliver, and on a dedicated
+                    // coordinator that is a different number. Read once, so a
+                    // change to it needs a z2m restart like the z2m-side
+                    // slider in lib/huelink-ui.mjs.
+                    min: Math.min(2, CONFIG.maxFps),
+                    max: CONFIG.maxFps,
                     step: 1,
                     unit_of_measurement: "fps",
                     mode: "slider",
@@ -1482,9 +1609,11 @@ export default class HueLink {
         if (this.settleTimer) clearTimeout(this.settleTimer);
         if (this.timer) clearInterval(this.timer);
         if (this.fpsTimer) clearInterval(this.fpsTimer);
+        if (this.configTimer) clearInterval(this.configTimer);
         this.settleTimer = null;
         this.timer = null;
         this.fpsTimer = null;
+        this.configTimer = null;
 
         // A tick already inside `stream.frame()` holds the radio and is about
         // to send ONE more frame. Stopping the stream underneath it put that

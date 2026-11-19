@@ -8,23 +8,52 @@
     "ERROR in the zigbee2mqtt log with the field name, and that one field falls",
     "back to its default.",
     "",
+    "The values below ARE the defaults, so this file as shipped changes nothing.",
+    "",
+    "Most pacer fields are re-read while zigbee2mqtt runs: save the file, wait a",
+    "couple of seconds, and the log says 'config changed, applied: ...'. Fields",
+    "that need a restart say RESTART REQUIRED in their description, and the log",
+    "names them too rather than appearing to have taken them.",
+    "",
     "JSON has no comments, so each field is described in '_fields' below and in",
     "the README. Keys starting with '_' are ignored by the loader."
   ],
 
   "_fields": {
-    "device": "zigbee2mqtt friendly_name of the gradient strip. This is also the POWER switch: turning this light off stops whatever huelink was doing.",
-    "segments": "Number of gradient segments the strip addresses. The Hue Play gradient lightstrip (LCX002) has 7.",
-    "udpPort": "UDP port huelink listens on for raw RGB frames. Point your Hyperion 'udpraw' output device at this port on this host. Any free port works as long as both sides agree.",
-    "udpBind": "Address the UDP listener binds to. '0.0.0.0' means every interface, which is what a Hyperion running on another machine needs. Set it to '127.0.0.1' when Hyperion runs on this same host, and the port stops existing for the rest of the network.",
-    "udpAllowFrom": "List of IP addresses allowed to send frames, for example ['192.168.1.50']. Empty means anyone who can reach the port. A frame carries no sender identity and no password, so whoever reaches the port drives the strip; this is the list that limits that.",
-    "tickMs": "How often the loop runs, in milliseconds. This is NOT the frame rate: how many frames really go out is decided by the pacer. The loop runs more often than frames go out so that a sudden scene change is noticed immediately.",
-    "startSettleMs": "How long after startup the extension makes no decisions, so that echoes of commands from the previous process can finish arriving.",
-    "fps": "Target frame rate for sync and effects, 1 to 5. 5 is the pacer's MAX_FPS and also the ceiling this field is validated against; the occupancy budget trims the frames further if the coordinator is busy. The HA slider offers 2 to 5, because 1 fps is a deliberate hand-back of the radio rather than something to drag to by accident.",
-    "occupancyBudget": "Fraction of wall clock time (0..1) that sync is allowed to keep the Zigbee coordinator busy. Above roughly 0.4 the rest of the house starts queueing behind the strip.",
-    "sourceTtlMs": "How long a source still counts as alive after its last frame. When it expires, the strip turns off and waits for frames to come back.",
-    "name": "Last part of the MQTT topic: <base_topic>/<name> for the retained state, <base_topic>/<name>/command for commands. Commands are NOT on '/set': zigbee2mqtt's own router claims every '<base_topic>/<something>/set' topic and would look '<name>' up as a Zigbee device it has never heard of.",
-    "locale": "Language of all human-visible strings: 'en' or 'lv'. See extension/lib/i18n/."
+    "device": "zigbee2mqtt friendly_name of the gradient strip. This is also the POWER switch: turning this light off stops whatever huelink was doing. RESTART REQUIRED.",
+    "segments": "Number of gradient segments the strip addresses. The Hue Play gradient lightstrip (LCX002) has 7. RESTART REQUIRED.",
+    "udpPort": "UDP port huelink listens on for raw RGB frames. Point your Hyperion 'udpraw' output device at this port on this host. Any free port works as long as both sides agree. RESTART REQUIRED.",
+    "udpBind": "Address the UDP listener binds to. '0.0.0.0' means every interface, which is what a Hyperion running on another machine needs. Set it to '127.0.0.1' when Hyperion runs on this same host, and the port stops existing for the rest of the network. RESTART REQUIRED.",
+    "udpAllowFrom": "List of IP addresses allowed to send frames, for example ['192.168.1.50']. Empty means anyone who can reach the port. A frame carries no sender identity and no password, so whoever reaches the port drives the strip; this is the list that limits that. RESTART REQUIRED.",
+    "tickMs": "How often the loop runs, in milliseconds, 1 to 1000. This is NOT the frame rate: how many frames really go out is the pacer's decision. The loop runs more often than frames go out so that a sudden scene change is noticed immediately. Lowering it to 10 halves the worst-case delay before a cut is noticed, and costs a little CPU; on its own it does not make the strip faster. RESTART REQUIRED.",
+    "startSettleMs": "How long after startup the extension makes no decisions, so that echoes of commands from the previous process can finish arriving. RESTART REQUIRED.",
+
+    "_pacing": "--- The fields below decide how much of the Zigbee coordinator the strip is allowed to take from the rest of the house. Read docs/PACING.md before raising any of them. ---",
+
+    "fps": "Target frame rate for sync and effects, 1 to 'maxFps'. This is only the STARTING value: Home Assistant and the zigbee2mqtt device page own it afterwards, so editing it here while running is ignored on purpose rather than fighting the slider. Change it from Home Assistant instead. RESTART REQUIRED.",
+    "maxFps": "Highest frame rate the slider and MQTT will accept, 1 to 50. The default of 5 comes from a send cost measured on a coordinator SHARED with the rest of the house. A coordinator dedicated to the strip is a different machine and may honestly carry more: see 'Separate coordinator' in the README before raising this. Raising it does not raise 'fps', it only permits it. RESTART REQUIRED, because the device page builds its slider from this number when zigbee2mqtt loads the converter.",
+    "dutyCap": "How many frames may go out in any single 100 ms window, 1 to 10. A hard instantaneous ceiling and therefore an fps ceiling too: 2 per 100 ms is 20 fps, so going above 20 needs 3. This is the number that bounds how many of our frames can ever sit ahead of a wall switch press. Home Assistant owns it afterwards; this is only where it starts. RESTART REQUIRED.",
+    "occupancyBudget": "Fraction of wall clock time (0.05 to 0.9) the stream may keep the Zigbee coordinator busy. This is the one number that protects the rest of the house. The frame rate it can pay for is roughly occupancyBudget divided by the measured frame cost: at the measured 51 ms, 0.35 buys about 6.9 fps. LIVE.",
+
+    "_quality": "--- Picture quality. These change how the strip looks rather than how much air it uses. All LIVE. ---",
+
+    "smoothingFactor": "Fade time as a multiple of the measured gap between frames, 1 to 2. Above 1 so the colour never comes to rest between frames, which is the stutter this exists to remove. Higher is smoother but leaves the strip further behind the picture. LIVE.",
+    "bigChangeThreshold": "How many perceptual thresholds a colour change must cross to count as a scene cut, 1 to 40. A cut may skip the frame clock, so this decides how often that happens: 1 means every visible change is a cut and the fps setting stops controlling anything, 40 is effectively off. LIVE.",
+    "fastSmoothingMs": "Fade time for a scene cut, 0 to 500 ms. Short on purpose: a cut is the one moment the strip is visibly behind the picture. 0 is allowed and reads as a click on a cheap strip; 20 to 40 is the range worth trying. LIVE.",
+    "maxFastPerSec": "How many times per second a scene cut may skip the frame clock, 0 to 10. A ration, not a mode: without it a strobe would be 'all cuts' and the fps setting would control nothing. 0 switches the fast path off. The worst case stays fps + maxFastPerSec. LIVE.",
+
+    "_burst": "--- The burst. OFF by default. It spends the budget EARLIER, it does not create any. Read the 'Burst' section of docs/PACING.md first. ---",
+
+    "burstFps": "Frame rate during a burst, 0 to 15, or up to 'maxFps' where that was set higher. 0 is OFF and is the default. A burst starts on a scene cut and raises the frame clock for a moment, paid out of credit that quiet scenes put in the bucket. It does NOT raise 'dutyCap', so the worst-case delay it can add to somebody else's command is unchanged; what it changes is how OFTEN the coordinator is busy. LIVE.",
+    "burstMaxMs": "Longest a single burst may last, 0 to 5000 ms. The bucket usually ends it sooner. 0 is the second way to switch bursting off. LIVE.",
+    "burstCreditMs": "Size of the bucket in COORDINATOR milliseconds, 0 to 5000. This is the real limiter: a burst may only spend what quiet scenes saved, so the long-term average stays 'occupancyBudget' whatever 'burstFps' is. It also bounds the damage, since a burst can never spend more than this above budget. 0 means nothing can be saved up. LIVE.",
+    "burstRefill": "Share of unspent budget that accrues as credit, 0 to 1. 1 saves every millisecond the stream did not use. Lower it to make bursts rarer without making them slower. 0 freezes the bucket. LIVE.",
+
+    "_rest": "--- Everything else. ---",
+
+    "sourceTtlMs": "How long a source still counts as alive after its last frame. When it expires, the strip turns off and waits for frames to come back. RESTART REQUIRED.",
+    "name": "Last part of the MQTT topic: <base_topic>/<name> for the retained state, <base_topic>/<name>/command for commands. Commands are NOT on '/set': zigbee2mqtt's own router claims every '<base_topic>/<something>/set' topic and would look '<name>' up as a Zigbee device it has never heard of. RESTART REQUIRED.",
+    "locale": "Language of all human-visible strings: 'en' or 'lv'. See extension/lib/i18n/. RESTART REQUIRED."
   },
 
   "device": "Hue Gradient Strip",
@@ -34,8 +63,22 @@
   "udpAllowFrom": [],
   "tickMs": 20,
   "startSettleMs": 2000,
+
   "fps": 5,
+  "maxFps": 5,
+  "dutyCap": 2,
   "occupancyBudget": 0.35,
+
+  "smoothingFactor": 1.15,
+  "bigChangeThreshold": 6,
+  "fastSmoothingMs": 50,
+  "maxFastPerSec": 1,
+
+  "burstFps": 0,
+  "burstMaxMs": 1000,
+  "burstCreditMs": 500,
+  "burstRefill": 1,
+
   "sourceTtlMs": 1000,
   "name": "huelink",
   "locale": "en"

@@ -120,6 +120,22 @@ The `huelink_*` entities that zigbee2mqtt generates for the strip itself are cre
 
 Every field in `huelink.config.json` is optional. A missing file, or a missing field, means the default. An invalid value is an `ERROR` in the log naming the field, and that one field falls back.
 
+Most of the pacing fields are **live**: save the file and the running extension picks them up, no restart. The rest say **restart** below, and the log names them rather than appearing to have taken them.
+
+### Applying a change
+
+The file's modification time is checked every two seconds. Save it, wait, and the log says one of:
+
+```
+config changed, applied: fastSmoothingMs=30, burstFps=12
+config changed, but no pacer value is different
+config changed: segments, udpPort only take effect after a zigbee2mqtt restart
+```
+
+So the tuning loop is: edit, save, watch the strip. Nothing to click, and no restart between experiments. Only plain pacer numbers are applied this way, each with a clamp and each read fresh on the next frame, so a change mid-stream cannot leave anything half done. A typo while the system is running is reported the same way as at startup, as an `ERROR` naming the field, and that one field keeps its current value.
+
+### The basics
+
 **`device`** (default `"Hue Gradient Strip"`) The zigbee2mqtt `friendly_name` of the gradient strip. This is also the **power switch**: turning this light off stops whatever HueLink was doing. The one field you must set.
 
 **`segments`** (default `7`) How many gradient segments the strip addresses. LCX002 has 7. Changing this alone does not teach HueLink a different pixel map, see Requirements.
@@ -130,19 +146,105 @@ Every field in `huelink.config.json` is optional. A missing file, or a missing f
 
 **`udpAllowFrom`** (default `[]`) IP addresses allowed to send frames, for example `["192.168.1.50"]`. Empty means anyone who can reach the port. A `udpraw` frame is 21 bytes with no sender and no password, so whoever reaches the port drives the strip; listing your Hyperion host closes that. Frames from anyone else are dropped, and the drops are reported as **one summary line a minute** giving the count and a sample of the senders. Not one line per sender: a UDP source address is trivially forged, so a line per new address would let a single host on the LAN fill the log and grow the extension's memory at the same time. The sample is capped for the same reason, and says so when it is truncated.
 
-**`tickMs`** (default `20`) Loop period in milliseconds. This is **not** the frame rate. The loop deliberately runs far more often than frames go out, so a sudden scene change is noticed immediately rather than at the next frame boundary. How many frames really leave is the pacer's decision.
+**`tickMs`** (default `20`, range 1 to 1000, restart) Loop period in milliseconds. This is **not** the frame rate. The loop deliberately runs far more often than frames go out, so a sudden scene change is noticed immediately rather than at the next frame boundary. How many frames really leave is the pacer's decision. Lowering it to `10` halves the worst-case delay before a cut is noticed and costs a little CPU; on its own it does not make the strip faster.
 
-**`startSettleMs`** (default `2000`) How long after startup HueLink makes no decisions, so that command echoes from its previous life can finish arriving.
+**`startSettleMs`** (default `2000`, restart) How long after startup HueLink makes no decisions, so that command echoes from its previous life can finish arriving.
 
-**`fps`** (default `5`) Target frame rate for Sync and Effects. This field accepts 1 to 5; the Home Assistant slider offers 2 to 5, because 1 fps is a deliberate way to hand the radio back to the rest of the house rather than something to land on by dragging. Five is not a typo and not a limitation of the radio, see [docs/PACING.md](docs/PACING.md).
+### Pacing
 
-**`occupancyBudget`** (default `0.35`) Fraction of wall clock time, 0 to 1, that streaming is allowed to keep the Zigbee coordinator busy. Above roughly 0.4 the rest of the house starts queueing behind the strip.
+These four decide how much of the Zigbee coordinator the strip takes from the rest of the house. Read [docs/PACING.md](docs/PACING.md) before raising any of them.
+
+**`fps`** (default `5`, range 1 to `maxFps`, restart) Target frame rate for Sync and Effects. This is only the **starting** value: Home Assistant and the zigbee2mqtt device page own it afterwards, so editing it here while running is ignored on purpose rather than fighting the slider. The HA slider offers 2 to 5, because 1 fps is a deliberate way to hand the radio back to the rest of the house rather than something to land on by dragging. Five is not a typo and not a limitation of the radio, see [docs/PACING.md](docs/PACING.md).
+
+**`maxFps`** (default `5`, range 1 to 50, restart) The highest frame rate the slider and MQTT will accept. The default comes from a send cost measured on a coordinator **shared** with the rest of the house. Raising it does not raise `fps`, it only permits it. See "Separate coordinator" below. Restart required because the device page builds its slider from this number when zigbee2mqtt loads the converter.
+
+**`dutyCap`** (default `2`, range 1 to 5, restart) Frames allowed in any single 100 ms window. A hard instantaneous ceiling and therefore an fps ceiling too: 2 per 100 ms is 20 fps, so going above 20 needs 3. This is the number that bounds how many HueLink frames can ever sit ahead of a wall switch press. Home Assistant owns it afterwards; this is only where it starts.
+
+**`occupancyBudget`** (default `0.35`, range 0.05 to 0.9, live) Fraction of wall clock time that streaming is allowed to keep the Zigbee coordinator busy. The frame rate it can pay for is roughly the budget divided by the measured cost of one frame: at the measured 51 ms, 0.35 buys about 6.9 fps. Above roughly 0.4 the rest of the house starts queueing behind the strip.
+
+### Picture quality
+
+These change how the strip looks rather than how much air it uses. All live.
+
+**`smoothingFactor`** (default `1.15`, range 1 to 2, live) Fade time as a multiple of the measured gap between frames. Above 1 so the colour never comes to rest between frames, which is the stutter it exists to remove. Higher is smoother but leaves the strip further behind the picture.
+
+**`bigChangeThreshold`** (default `6`, range 1 to 40, live) How many perceptual thresholds a colour change must cross to count as a scene cut. 1 means every visible change is a cut and the `fps` setting stops controlling anything; 40 is effectively off.
+
+**`fastSmoothingMs`** (default `50`, range 0 to 500, live) Fade time for a scene cut. Short on purpose: a cut is the one moment the strip is visibly behind the picture. 0 is allowed and reads as a click on a cheap strip; 20 to 40 is the range worth trying.
+
+**`maxFastPerSec`** (default `1`, range 0 to 10, live) How many times per second a scene cut may skip the frame clock. A ration, not a mode: without it a strobe would be all cuts and `fps` would control nothing. 0 switches the fast path off. The worst case stays `fps + maxFastPerSec`.
+
+### The burst
+
+Off by default. A burst spends the budget **earlier**, it does not create any: it may only pay out of credit that quiet scenes put in a bucket, so the long-term average is still `occupancyBudget`. All live. Read the "The burst" section of [docs/PACING.md](docs/PACING.md) before turning it on.
+
+**`burstFps`** (default `0`, i.e. off, range 0 to 15 or up to `maxFps` where that is higher, live) Frame rate during a burst. A burst starts on a scene cut and raises the frame clock for a moment. It does **not** touch `dutyCap`, so the worst-case delay it can add to somebody else's command is unchanged; what it changes is how often the coordinator is busy.
+
+**`burstMaxMs`** (default `1000`, range 0 to 5000, live) Longest a single burst may last. The bucket usually ends it sooner. 0 is the second way to switch bursting off.
+
+**`burstCreditMs`** (default `500`, range 0 to 5000, live) Size of the bucket, in coordinator milliseconds. This is the real limiter, and it also bounds the damage: a burst can never spend more than this above budget. 0 means nothing can be saved up.
+
+**`burstRefill`** (default `1`, range 0 to 1, live) Share of unspent budget that accrues as credit. 1 saves every millisecond the stream did not use. Lower it to make bursts rarer without making them slower. 0 freezes the bucket.
+
+Measured on 300 s of synthetic film cut every ~4 s, at a 51 ms frame cost: turning the burst on at 12 fps moved mean coordinator occupancy 19.5 % → 21.6 % and p95 20.4 % → 30.6 %, while the **worst** wait a foreign command could meet stayed 51 ms, one frame, in both columns. See `tools/burstbench.mjs` and [docs/PACING.md](docs/PACING.md).
+
+### Everything else
 
 **`sourceTtlMs`** (default `1000`) How long a frame source still counts as alive after its last frame. `udpraw` has no "stream ended" signal, so silence is the only signal there is. When the TTL expires the strip turns off and waits for frames to come back.
 
 **`name`** (default `"huelink"`) Last part of the MQTT topic: `<base_topic>/<name>` for state, `<base_topic>/<name>/command` for commands. The command suffix is deliberately not `/set`; see docs/DESIGN.md.
 
 **`locale`** (default `"en"`) Language of every human-visible string: `"en"` or `"lv"`. Strings that go on the wire (MQTT keys, mode values, `ON`/`OFF`, effect ids) are never translated, so switching language does not rewrite the API. See `extension/lib/i18n/`.
+
+### Separate coordinator
+
+The default of 5 fps is not a property of Zigbee or of the strip. It comes from one measured number on one machine: a frame costs this coordinator about **51 ms of its own time**, and the strip is only allowed a third of a coordinator it shares with every other light, sensor and switch in the house. A second coordinator dedicated to the strip is a different machine with a different answer, and there the defaults are leaving something on the table.
+
+**On a shared coordinator, raising these is not a tuning choice, it is a decision to make the rest of the house slower.** Every millisecond HueLink holds the ZNP port is a millisecond a wall switch press waits behind it. If the strip shares a coordinator, leave this section alone.
+
+#### Measure first
+
+Do not start from a target frame rate. Start from what a frame costs you:
+
+1. Run Sync or any effect for a minute.
+2. Read `pacer.avgSendMs` from the retained `zigbee2mqtt/huelink` topic (`mosquitto_sub -t zigbee2mqtt/huelink -C 1`).
+3. That number, not 51, is your price.
+
+#### Then the arithmetic
+
+```
+budget fps  =  occupancyBudget / (avgSendMs / 1000)
+duty fps    =  dutyCap * 1000 / 100          (dutyCap frames per 100 ms window)
+maxFps      =  min(budget fps, duty fps)
+```
+
+Both limiters bind, so the smaller one is your real ceiling. At the defaults: `0.35 / 0.051 = 6.9` fps from the budget, `2 * 10 = 20` fps from the duty cap, so the budget is what binds and `maxFps` above 7 would be a number that never fires.
+
+#### In this order
+
+1. **`occupancyBudget` first.** On a dedicated coordinator there is nothing else to protect, so a much higher share is honest, not reckless: 0.7 is a defensible starting point. This one is live, so you can move it and watch.
+2. **`dutyCap` second, only if the budget now allows more than `dutyCap * 10` fps.** It is the instantaneous ceiling: 2 is 20 fps, 3 is 30. Raising it also raises how many HueLink frames can sit ahead of anything else at one instant, which is the one cost a dedicated coordinator does not remove if anything at all still shares it.
+3. **`maxFps` last**, to the smaller of the two numbers above. It only permits; it does not raise `fps`.
+4. **Restart zigbee2mqtt**, because `maxFps` and `dutyCap` are read when the converter loads.
+5. **Raise `fps`** from Home Assistant or the device page.
+
+If the three disagree, the log says so at startup rather than quietly trimming:
+
+```
+config: 'fps' 12 is above the ~6.9 fps that 'occupancyBudget' 0.35 buys at 51 ms per frame: ...
+```
+
+#### Verify
+
+Set `fps` to the new ceiling and check three things:
+
+- `fps_real` in the retained topic is close to `fps`. If it is not, something is still binding and the startup warnings say which.
+- `pacer.skippedDuty` is not climbing. If it is, `dutyCap` or the budget is the limiter, not the radio.
+- `pacer.worstSendMs` is not growing. A rising worst case is the mesh telling you it has had enough, and it is the tail, not the average, that ends in `SRSP - AF - dataRequest after 6000ms`.
+
+Then turn a light that is **not** the strip on and off by hand and see whether it still feels immediate. That test is subjective and it is also the only one that matters.
+
+No number is promised here. What you can reach depends on your coordinator, your firmware, your mesh and how far the strip is from the stick, and the only way to find it is the three readings above.
 
 ---
 

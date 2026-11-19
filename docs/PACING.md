@@ -82,7 +82,70 @@ The criterion is ≤ 80 % of the 0.35 budget, i.e. 28.0 %. At the p90 cost, fps 
 
 The old default of 12 fps was never achievable: 12 × 51 ms = 61 % occupancy, so the budget cut it to about 6.7 fps anyway. The slider showed a number the device could not deliver, and the only thing it really controlled was how hard the stream slammed into its safety limits.
 
-`setFps()` clamps to `MAX_FPS` rather than trusting the UI, because HA restores a `number` entity's last value — an old saved 12 would come back after a restart and walk straight past the new UI ceiling.
+`setFps()` clamps to the ceiling rather than trusting the UI, because HA restores a `number` entity's last value — an old saved 12 would come back after a restart and walk straight past the new UI ceiling.
+
+### 5 is a default, not a law
+
+Every number above was measured on **one** coordinator: the one shared with the rest of this house. 51 ms is a property of that installation, not of Zigbee, so the ceiling it implies cannot be a law for installations that do not share it. `maxFps` in `huelink.config.json` moves it; 5 is what you get for not having an opinion.
+
+Two things keep that from quietly undoing the measurement:
+
+- Raising `maxFps` **permits** a higher `fps`, it does not set one. The stream still runs at whatever `fps` says, and the occupancy budget still trims it.
+- Startup warns when the numbers disagree, so asking for 15 fps on a budget that can pay for 6.9 is said out loud instead of silently trimmed.
+
+The arithmetic for deciding what a different coordinator can carry is in the README, under "Separate coordinator".
+
+## The burst
+
+Off by default (`burstFps: 0`). It is the one mechanism here that does not ration, so it gets the longest justification.
+
+### What it is for
+
+The fps clock is an average, and an average is the wrong answer at a scene cut. The fast path already rescues **one** frame there. The burst answers the other half of the same complaint: after a cut the picture keeps moving for a second or so, and that whole second is running at the ordinary rate.
+
+### What it does not do
+
+It does **not** raise the occupancy budget. It moves budget in time.
+
+The bucket is measured in **coordinator milliseconds**. Every elapsed millisecond credits it with `occupancyBudget × burstRefill` ms, capped at `burstCreditMs`. Every send — burst frame or not — debits it by that frame's measured cost, with a floor at `-burstCreditMs` so a coordinator stall cannot invent an unbounded debt. A burst refuses to start unless the bucket can already pay for a frame.
+
+That single ledger gives a bound you can check rather than a promise you have to trust:
+
+```
+spent <= earned + burstCreditMs = elapsed × occupancyBudget × burstRefill + burstCreditMs
+```
+
+so the long-run average occupancy is the budget plus a term that vanishes as the run gets longer. At the defaults that term is 500 ms: a burst can never put the stream more than half a second of coordinator time above budget, ever. `test/tuning.test.mjs` asserts this bound against ten simulated minutes of deliberately loud content.
+
+The hard per-window cap (`dutyCap`, 2 frames per 100 ms) is **not** touched by a burst. That matters because it, not the budget, is what bounds how many of our frames can sit ahead of somebody else's command at any instant. So the worst case a burst can inflict on a wall switch press is unchanged; what changes is how *often* a press meets a busy coordinator.
+
+### What it costs, measured
+
+`tools/burstbench.mjs`, 300 s of synthetic film, a cut every ~4 s, 51 ms per send, 20 ms tick, budget 0.35. The same film is fed to the same real `Pacer` twice, so the two columns differ by `burstFps` and nothing else. Wall switch presses are sampled every 1 ms, which is the same thing as a uniformly arriving press.
+
+```
+                                        burst off   burst 12   burst 15
+frames sent                                  1148       1275       1293
+fps (whole run)                              3.83       4.25       4.31
+bursts started                                  0         63         63
+frames paid from the bucket                     0        400        422
+occupancy mean %                             19.5       21.6       21.9
+occupancy p95 %                              20.4       30.6       35.7
+press wait mean, ms                           5.1        5.6        5.7
+press wait p95, ms                             38         40         40
+press wait WORST, ms                           51         51         51
+press wait mean within 1 s of a cut, ms       5.3        8.3        8.8
+```
+
+Read it in this order:
+
+1. **The worst case does not move.** 51 ms, which is one frame, in all three columns. That is the hard per-window cap doing its job, and it is the number that answers "can this make the house feel broken".
+2. **The average barely moves.** Mean occupancy 19.5 → 21.6 %, mean press wait 5.1 → 5.6 ms. This is the ledger: the burst is spending credit that quiet scenes earned, not new budget.
+3. **The peak moves a lot.** Occupancy p95 20.4 → 30.6 % at `burstFps: 12`, and 35.7 % at 15. Within one second of a cut the mean press wait goes 5.3 → 8.3 ms.
+
+So "the rest of the house will not notice" is *nearly* true and worth stating precisely: nothing gets slower in the worst case, and a command arriving in the second after a scene cut waits about 3 ms longer on average. On a shared coordinator that is the trade being made. 15 fps buys 1.4 % more frames than 12 and costs another 5 points of p95 occupancy, which is a poor exchange; 12 is the better end of the range.
+
+**This bench is a simulation and says so.** It models the coordinator as what ZNP is — a single server with one outstanding request, each frame occupying it for `SEND_MS`. Its one input is measured (51.2 ms median, 135 samples), and the quantity it reports is bounded by that same number. It is worth nothing as a claim about radio behaviour, retries or a congested mesh. For those, run `tools/fpsrun.mjs` against the real rig.
 
 ## The fast path for scene cuts
 
@@ -150,11 +213,57 @@ Reviewed rather than left alone. The objection was fair: `occupancy()` counts **
 
 `LIMITS` lives in `pacer.mjs`, not in the UI layer, on purpose: the pacer clamps anyway, and if the slider's ends lived separately the UI would sooner or later show numbers the device silently overwrites. That was the false 5–25 fps slider. `lib/huelink-ui.mjs` imports these rather than restating them.
 
+There are two sets of bounds and they do different jobs, which is worth saying plainly because they look alike. `LIMITS` in `pacer.mjs` is the **real clamp**: whatever reaches the pacer comes out inside those ends, whether it arrived from a slider, from MQTT or from the file. `SPEC` in `config.mjs` is a **typo catcher**: it rejects `"fsp": 50` and a budget of `35` instead of `0.35` loudly, at startup, naming the field, rather than letting a clamp silently turn nonsense into something plausible. A value that passes `SPEC` is still clamped by `LIMITS`; the point of `SPEC` is that you find out.
+
+### Who owns which number
+
+| set from | knobs |
+| --- | --- |
+| Home Assistant / the z2m device page, at any time | `fps`, `deltaScalePct`, `dutyCap` |
+| `huelink.config.json`, re-read while running (`TUNABLE`) | `occupancyBudget`, `smoothingFactor`, `bigChangeThreshold`, `fastSmoothingMs`, `maxFastPerSec`, `burstFps`, `burstMaxMs`, `burstCreditMs`, `burstRefill` |
+| `huelink.config.json`, at startup only | `maxFps`, and everything outside the pacer (`device`, `segments`, `udpPort`, `tickMs`, …) |
+
+The first row is missing from `TUNABLE` deliberately. Those three have live controls in front of a person, and a file that also set them would be a second owner quietly overwriting that person mid-session. The file still gives all three a **starting** value; it just stops setting them afterwards. `maxFps` is in the third row for an unrelated reason: the z2m device page builds the `huelink_fps` slider from it when the converter loads, so a `maxFps` that moved while running would be describing a slider nobody is looking at.
+
+Everything in `TUNABLE` is a plain number with a clamp, read fresh on the next frame, which is why applying one mid-stream cannot leave anything half-changed. `segments` and `udpPort` are not like that and are not there.
+
+### The ends, and why they are where they are
+
 **`deltaScalePct`: 25–400, step 25, default 100.** Percent of the measured defaults. Below 25 % the threshold drops under `rgbToXy` rounding noise: every frame would count as changed and suppression would stop working entirely. Above 400 % even a scene cut goes unnoticed and the strip freezes.
 
-**`dutyCap`: 1–5, step 1, default 2.** Frames per `windowMs`. 1 is the strictest meaningful value (one frame per 100 ms); above 5 the window constrains nothing, because `MAX_FPS` cannot reach it anyway, and a ceiling that never fires is decoration.
+**`dutyCap`: 1–5, step 1, default 2.** Frames per `windowMs`. 1 is the strictest meaningful value (one frame per 100 ms). 5 per 100 ms is 50 fps instantaneous, which is `FPS_CEILING`, so past it the window would be the only limiter left and would have nothing above it to catch. Note that this is also an fps ceiling in disguise: 2 per 100 ms is 20 fps, so an `fps` above 20 needs `dutyCap` 3 before it can mean anything. The startup consistency check says so out loud rather than making you work it out.
 
-The threshold is exposed as **one** number, not two. `xyThreshold` and `briThreshold` are in different units (CIE distance and 0..1 brightness) and there is never a reason to move them separately: both answer the same question, "how small a change is still worth sending". So the outside world sees only a scale against the measured defaults, where 100 % is those defaults.
+**`maxFps`: 1–50, step 1, default 5.** The ceiling `setFps()` clamps against. Its upper end is `FPS_CEILING`, which is `dutyCap.max × 1000 / windowMs`: asking for more than the other limiter can ever pass is asking for a number that does nothing. Raising `maxFps` does **not** raise `fps`, it only permits it. See "Separate coordinator" in the README before touching it.
+
+**`occupancyBudget`: 0.05–0.9, step 0.05, default 0.35.** Above 0.9 the stream owns the coordinator; below 0.05 it never sends.
+
+**`smoothingFactor`: 1–2, step 0.05, default 1.15.** Below 1 the colour comes to rest before the next frame, which is the stutter the factor exists to remove; above 2 the strip is always a frame and a half behind the picture.
+
+**`bigChangeThreshold`: 1–40, step 1, default 6.** 1 means "every visible change is a cut", which hands the fps clock to the fast path; 40 is a full colour inversion, i.e. effectively off.
+
+**`fastSmoothingMs`: 0–500, step 10, default 50.** 0 is allowed and reads as a click on a cheap strip; 500 is no longer fast.
+
+**`maxFastPerSec`: 0–10, step 1, default 1.** Fast frames per `fastWindowMs`. 0 switches the fast path off entirely.
+
+**`burstFps`: 0–15, step 1, default 0 (off).** The ceiling is `BURST_MAX_FPS` = 15, or `maxFps` where that was configured higher, since a burst slower than the ordinary stream would be a strange thing to own.
+
+**`burstMaxMs`: 0–5000, step 100, default 1000.** Longest single burst. 0 is the second way to switch bursting off.
+
+**`burstCreditMs`: 0–5000, step 50, default 500.** Bucket size in coordinator ms. 0 means nothing can ever be saved up.
+
+**`burstRefill`: 0–1, step 0.05, default 1.** Share of unspent budget that accrues. 0 freezes the bucket.
+
+The delta threshold is exposed as **one** number, not two. `xyThreshold` and `briThreshold` are in different units (CIE distance and 0..1 brightness) and there is never a reason to move them separately: both answer the same question, "how small a change is still worth sending". So the outside world sees only a scale against the measured defaults, where 100 % is those defaults.
+
+### Settings that contradict each other
+
+A number inside its own range can still be impossible next to another one. `consistency()` in `config.mjs` runs once at startup and logs a WARNING for each of three cases:
+
+- `fps` above `maxFps`: the stream will simply run at `maxFps`.
+- `fps` above what `dutyCap` per `windowMs` can pass, with the `dutyCap` value that would actually carry it.
+- `fps` above roughly `occupancyBudget / NOMINAL_SEND_MS`, i.e. above what the budget can pay for at 51 ms a frame. The warning points at `avgSendMs` in the published pacer stats, because 51 ms is this coordinator's measured price and yours may differ.
+
+These are warnings, not errors, and nothing is trimmed behind your back. The limiters would have produced exactly the same behaviour in silence; the point is that "I set 12 fps and got 5" has a reason printed in the log instead of being a mystery.
 
 ## Bench results
 

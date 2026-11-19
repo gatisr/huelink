@@ -6,13 +6,37 @@
  * Two files, loaded independently, so a name written twice would fail
  * silently. Names, ranges and descriptions live here only; both sides import.
  *
- * Ranges come from `pacer.mjs` LIMITS because the pacer clamps to them anyway.
+ * Ranges come from `pacer.mjs` LIMITS because the pacer clamps to them anyway,
+ * and the fps ceiling from `huelink.config.json` for the same reason.
  * The `huelink_` prefix is mandatory: the strip already has `effect`,
  * `effect_speed` and `identify` from the Philips definition.
  */
 
-import { LIMITS, MAX_FPS } from "./pacer.mjs";
+import { CONFIG } from "./config.mjs";
+import { LIMITS } from "./pacer.mjs";
 import { t } from "./i18n/index.mjs";
+
+/**
+ * The fps slider follows the CONFIGURED ceiling, not the built-in default.
+ *
+ * This file is imported by the converter as well as by the extension, and both
+ * run beside `configuration.yaml`, so both read the same
+ * `huelink.config.json`. That is what makes the slider honest: a hard 5 here
+ * against a `maxFps` of 17 in the file would be a control that silently
+ * disagrees with the engine, which is the exact failure the shared module was
+ * written to prevent.
+ *
+ * It is read once, when z2m loads the converter. Changing `maxFps` therefore
+ * needs a z2m restart, unlike the pacer knobs the extension re-reads. Nothing
+ * clever is available here: the slider's shape is part of the device
+ * definition that Home Assistant has already turned into an entity.
+ *
+ * 2 is a UI choice, not the pacer's clamp (which allows 1): 1 fps is not a
+ * usable mode, 2 is an honest way to nearly stop the stream. It gives way if
+ * someone sets a ceiling below it, since an empty range is worse than a slow one.
+ */
+const FPS_MAX = CONFIG.maxFps;
+const FPS_MIN = Math.min(2, FPS_MAX);
 
 /**
  * Human-facing mode names. One list for the HA `select`, the z2m `enum` and
@@ -97,12 +121,10 @@ export const FIELDS = [
         type: "numeric",
         access: ACCESS_STATE_SET,
         label: t("field.fps.label"),
-        description: t("field.fps.description", { max: MAX_FPS }),
+        description: t("field.fps.description", { max: FPS_MAX }),
         unit: "fps",
-        // A UI choice, not the pacer's clamp (which allows 1). 1 fps is not a
-        // usable mode; 2 is an honest way to nearly stop the stream.
-        min: 2,
-        max: MAX_FPS,
+        min: FPS_MIN,
+        max: FPS_MAX,
         step: 1,
         category: "config",
     },

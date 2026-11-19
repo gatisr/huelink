@@ -4,6 +4,23 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.1.0
+
+Tuning without editing code. Every pacing number that used to be a constant is now a field in `huelink.config.json`, most of them re-read while zigbee2mqtt runs. **Nothing changes for an installation that does not touch the file**: every default is the value the constant had, the new burst ships off, and `test/tuning.test.mjs` holds that line three independent ways.
+
+### Added
+
+- **Ten new settings**, all optional: `maxFps`, `dutyCap`, `smoothingFactor`, `bigChangeThreshold`, `fastSmoothingMs`, `maxFastPerSec`, `burstFps`, `burstMaxMs`, `burstCreditMs`, `burstRefill`. Documented field by field in the README and `huelink.config.example.json`, each with its default and its range.
+- **Live reload.** The settings file is checked every two seconds and the pacer numbers in it are applied without a restart: save, wait, watch the strip. Only plain numbers with clamps are applied this way; anything needing a restart is **named** in the log instead of appearing to have been taken.
+- **A configurable fps ceiling.** `maxFps` replaces the hardcoded 5, and the `huelink_fps` slider on the zigbee2mqtt device page is built from it, so the UI and the device can no longer disagree. The default is still 5. See "Separate coordinator" in the README before raising it.
+- **An optional burst**, off by default. A token bucket measured in coordinator milliseconds lets a scene cut run faster for a moment, paid out of credit that quiet scenes earned, so the long-term average is still `occupancyBudget`. Measured rather than asserted: `tools/burstbench.mjs` reports what it costs a wall switch press, and the worst case does not move.
+- **Startup consistency warnings.** Settings that are individually valid but contradict each other — `fps` above `maxFps`, above what `dutyCap` can pass, or above what the budget can pay for — are reported with the value that would carry them, instead of being silently trimmed.
+- **`tools/burstbench.mjs`** and **`test/tuning.test.mjs`**, plus a "Separate coordinator" section in the README for anyone running the strip on a coordinator of its own.
+
+### Fixed
+
+- The burst credit bucket never accrued when the caller's clock started at zero, because `0` was both a valid timestamp and the "it has never run" sentinel.
+
 ## 1.0.0
 
 First release: everything below is what the extension does, rather than a record of how it got there.

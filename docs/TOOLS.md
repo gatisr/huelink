@@ -118,6 +118,28 @@ Measures what reaches the synthetic z2m. The transport is identical to the Bifro
 
 Honest about its limits: it measures whether our encoding and sending can hold a target frame rate. It does **not** measure Zigbee radio throughput — there is no radio and no real strip in the synthetic z2m, and the real ceiling will be the radio, not this. See `docs/PACING.md`.
 
+## `burstbench.mjs` — what the token bucket costs the rest of the house
+
+```sh
+node tools/burstbench.mjs [seconds] [burstFps]
+SEND_MS=51 TICK_MS=20 CUT_S=4 DRIFT=60 node tools/burstbench.mjs 300 12
+```
+
+The question the burst raises is not "is the strip smoother", which anyone can see, but "does pressing a wall switch get slower while it happens". This answers that: the same synthetic film is fed to the same real `Pacer` twice, once with `burstFps: 0` and once with the burst on, so the two printed columns differ by one setting and nothing else. It imports the production `Pacer`, not a copy of its arithmetic.
+
+It is a **simulation and says so**. The coordinator is modelled as what ZNP actually is, a single server with one outstanding request, each frame occupying it for `SEND_MS`. The model is worth something because its one input is measured (51.2 ms median over 135 samples, `docs/PACING.md`) and because the quantity it produces, how long a foreign command waits for our frame to finish, is bounded by that same number. It is worth nothing as a claim about radio behaviour, retries or a congested mesh; for those, run `fpsrun.mjs` against the real rig.
+
+The press-wait distribution is sampled every millisecond across each tick, not once per tick, which is the same thing as a uniformly arriving press and contains no RNG noise. Sampling on the tick grid alone understates the worst case by a whole tick, which is how an early version of this bench reported a 31 ms worst wait for a 51 ms frame.
+
+The film is a knob rather than a buried constant because the result is more sensitive to it than to anything else. Shots **travel** (`DRIFT` colour units per second, held for the length of a shot) instead of random-walking, because steps that cancel leave the colour where it started, delta suppression then eats every frame, and the stream idles at 1 fps whatever the limiter is set to. It is also deliberately not a strobe: a limiter looks free on content that changes completely every tick, because there is nothing left to suppress.
+
+| variable | meaning | default |
+| --- | --- | --- |
+| `SEND_MS` | measured cost of one frame on the coordinator | `51` |
+| `TICK_MS` | loop period, i.e. how often a frame is offered | `20` |
+| `CUT_S` | mean seconds between scene cuts (film averages 4–6) | `4` |
+| `DRIFT` | colour units per second within a shot, out of 255 | `60` |
+
 ## `ledprobe.mjs`, `udpdump.py`, `setdevice.sh` — rig plumbing
 
 - `ledprobe.mjs` checks whether Hyperion emits `ledcolors-ledstream-update` at all. Written to find out why `bytediff` was hanging waiting for a frame.
@@ -128,7 +150,7 @@ Honest about its limits: it measures whether our encoding and sending can hold a
 
 Nothing here is broken, but most of it needs something to talk to, and that is worth knowing before running a tool and reading a connection error as a bug.
 
-- `preview.mjs`, `effectproof.mjs` and `font5x7.mjs` run on their own. They need only Node and the effect data.
+- `preview.mjs`, `effectproof.mjs`, `font5x7.mjs` and `burstbench.mjs` run on their own. They need only Node, and the effect data or the pacer.
 - `extsim.mjs`, `modesim.mjs` and `fpsrun.mjs` need the synthetic z2m at `Z2M_WS`. The extension logic is exercised either way, but the Zigbee commands have to land somewhere to be inspected.
 - `bytediff.mjs` needs a Bifrost instance **and** the synthetic z2m behind it, plus `BIFROST_AREA`; it exits with a message rather than streaming to a default when that id is missing.
 - `hatest.mjs` needs a reachable MQTT broker and a Home Assistant with a long-lived token in `HA_TOKEN`.

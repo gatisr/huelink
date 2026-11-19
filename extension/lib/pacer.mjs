@@ -5,6 +5,11 @@
  * outstanding SREQ and each send costs ~51 ms. The three levers (smoothing,
  * perceptual delta suppression, duty cap) all ration that one number.
  *
+ * The burst (`burstFps`, off by default) is the one thing here that does not
+ * ration: it moves budget in time. Quiet scenes leave budget unspent, the
+ * token bucket keeps it, and one loud scene may spend it. The total over a
+ * long run is still `occupancyBudget`.
+ *
  * Every constant here was measured. The measurements, the rejected
  * alternatives and the bench results are in docs/PACING.md.
  */
@@ -23,15 +28,58 @@ export const BRI_THRESHOLD = 0.025;
 const BUSY_WINDOW_MS = 1000;
 
 /**
- * Highest fps anyone may ask for, from the UI or over MQTT.
- * Derived from the measured 51 ms send cost, not from taste. See docs/PACING.md.
+ * DEFAULT highest fps anyone may ask for, from the UI or over MQTT.
+ * Derived from the measured 51 ms send cost on a coordinator the rest of the
+ * house also uses, not from taste. See docs/PACING.md.
+ *
+ * It is a default rather than a law because the cost it comes from is a
+ * property of one installation: a coordinator dedicated to the strip is a
+ * different machine with a different price per frame. `maxFps` in
+ * `huelink.config.json` moves the ceiling; this stays what you get for not
+ * having an opinion.
  */
 export const MAX_FPS = 5;
+
+/**
+ * Hard upper bound on `maxFps` itself, so the configurable ceiling is still a
+ * ceiling. 50 is not taste either: the hard per-window cap allows at most
+ * `LIMITS.dutyCap.max` frames per `windowMs`, i.e. 5 per 100 ms, and asking
+ * for more than the other limiter can ever pass is asking for a number that
+ * does nothing.
+ */
+export const FPS_CEILING = 50;
+
+/**
+ * Highest fps the BURST path may reach. A separate ceiling on purpose:
+ * `MAX_FPS` is the rate the stream may hold INDEFINITELY, and raising it
+ * quietly would undo the measurement it comes from. A burst is the other
+ * question, "how fast may it go for a moment, having saved up for it", and it
+ * is paid for out of the token bucket rather than out of the budget.
+ *
+ * 15, because above it the hard per-window cap (2 frames per `windowMs`, i.e.
+ * 20 fps instantaneous) would start binding, and then two limiters would be
+ * fighting over the same frames.
+ */
+export const BURST_MAX_FPS = 15;
+
+/**
+ * Price of one send before anything has been measured: the median of 135 real
+ * `avgSendMs` samples. Used only as the opening estimate for the token bucket;
+ * once frames have gone out, their own measured cost is used instead.
+ */
+export const NOMINAL_SEND_MS = 51;
 
 /** Defaults when the caller passes nothing. */
 export const DEFAULTS = {
     /** Target frame rate: a ceiling, not a promise. */
     fps: MAX_FPS,
+    /**
+     * Highest fps `setFps` will accept. Set once, at construction: the z2m
+     * device page builds its slider from this number when the converter
+     * loads, so a value that moved while running would describe a slider
+     * nobody is looking at.
+     */
+    maxFps: MAX_FPS,
     /**
      * Share of wall time the stream may keep the coordinator busy.
      * 0.35 is a reviewed decision, not an untouched leftover. See docs/PACING.md.
@@ -59,6 +107,26 @@ export const DEFAULTS = {
     fastWindowMs: 1000,
     /** Fade for a scene cut. Not zero: a jump reads as a click on a cheap strip. */
     fastSmoothingMs: 50,
+
+    // --- Burst: the token bucket. Off by default, see docs/PACING.md. ---
+
+    /**
+     * Frame rate during a burst. 0 is OFF, and that is the default: a burst
+     * deliberately spends more coordinator time than `fps` allows, so it is
+     * something a person turns on for their own house, not something every
+     * installation inherits.
+     */
+    burstFps: 0,
+    /** Longest single burst. The bucket usually ends it sooner. */
+    burstMaxMs: 1000,
+    /**
+     * Size of the bucket, in COORDINATOR milliseconds. This is the real
+     * limiter: a burst may only spend what quiet scenes put in, so the
+     * long-term average stays the occupancy budget whatever the burst fps is.
+     */
+    burstCreditMs: 500,
+    /** Share of unspent budget that accrues as credit. 1 = all of it. */
+    burstRefill: 1,
 };
 
 /**
@@ -74,11 +142,76 @@ export const LIMITS = {
      */
     deltaScalePct: { min: 25, max: 400, step: 25 },
     /**
-     * Frame quota per `windowMs`. Above 5 the window constrains nothing, since
-     * `MAX_FPS` never reaches it, and a ceiling that never fires is decoration.
+     * Frame quota per `windowMs`. 5 per 100 ms is 50 fps instantaneous, which
+     * is `FPS_CEILING`: past that the window would be the only limiter left.
      */
     dutyCap: { min: 1, max: 5, step: 1 },
+    /**
+     * The fps ceiling itself, from `huelink.config.json`. Read at startup
+     * only, so it is not in `TUNABLE`, but it is clamped like everything else.
+     */
+    maxFps: { min: 1, max: FPS_CEILING, step: 1 },
+
+    // --- `TUNABLE`: set from huelink.config.json, re-read while running. ---
+
+    /** Above 0.9 the stream owns the coordinator; below 0.05 it never sends. */
+    occupancyBudget: { min: 0.05, max: 0.9, step: 0.05 },
+    /**
+     * Fade = measured gap * this. Below 1 the colour comes to rest before the
+     * next frame, which is the stutter the factor exists to remove; above 2 the
+     * strip is always a frame and a half behind the picture.
+     */
+    smoothingFactor: { min: 1, max: 2, step: 0.05 },
+    /**
+     * Thresholds a change must cross to count as a scene cut. 1 means "every
+     * visible change is a cut", which hands the fps clock to the fast path;
+     * 40 is a full colour inversion, i.e. effectively off.
+     */
+    bigChangeThreshold: { min: 1, max: 40, step: 1 },
+    /** Fade for a cut. 0 is allowed and reads as a click; 500 is no longer fast. */
+    fastSmoothingMs: { min: 0, max: 500, step: 10 },
+    /** Fast frames per `fastWindowMs`. 0 switches the fast path off entirely. */
+    maxFastPerSec: { min: 0, max: 10, step: 1 },
+    /**
+     * Burst frame rate. 0 is off. The ceiling is `BURST_MAX_FPS`, or `maxFps`
+     * where that was configured higher: a burst slower than the ordinary
+     * stream would be a strange thing to own. See `Pacer#limit`.
+     */
+    burstFps: { min: 0, max: BURST_MAX_FPS, step: 1 },
+    /** Longest single burst. 0 is the second way to switch bursting off. */
+    burstMaxMs: { min: 0, max: 5000, step: 100 },
+    /** Bucket size in coordinator ms. 0 means nothing can ever be saved up. */
+    burstCreditMs: { min: 0, max: 5000, step: 50 },
+    /** Share of unspent budget that accrues. 0 freezes the bucket. */
+    burstRefill: { min: 0, max: 1, step: 0.05 },
 };
+
+/**
+ * Knobs that may be set from `huelink.config.json` AND re-applied while the
+ * extension runs, without a restart. The list is short for a reason: every
+ * entry here is a plain number with a clamp in `LIMITS`, read fresh on the
+ * next frame, so applying one mid-stream cannot leave anything half-changed.
+ * `segments` or `udpPort` are not like that, and are not here.
+ *
+ * `fps`, `deltaScalePct` and `dutyCap` are missing on purpose as well: those
+ * are live knobs in Home Assistant and on the z2m device page, so a file that
+ * also set them would be a second owner quietly overwriting a person. The
+ * file still gives them a STARTING value; it just stops setting them after.
+ *
+ * `maxFps` is missing for a different reason: the slider that has to respect
+ * it is built once, when z2m loads the converter.
+ */
+export const TUNABLE = [
+    "occupancyBudget",
+    "smoothingFactor",
+    "bigChangeThreshold",
+    "fastSmoothingMs",
+    "maxFastPerSec",
+    "burstFps",
+    "burstMaxMs",
+    "burstCreditMs",
+    "burstRefill",
+];
 
 const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
 
@@ -123,9 +256,17 @@ class Ring {
 export class Pacer {
     constructor(opts = {}) {
         const o = { ...DEFAULTS, ...opts };
-        this.fps = o.fps;
-        this.occupancyBudget = o.occupancyBudget;
-        this.maxPerWindow = o.maxPerWindow;
+        // The ceiling first: `setFps` below clamps against it.
+        this.maxFps = clamp(toFinite(o.maxFps) ?? DEFAULTS.maxFps, LIMITS.maxFps.min, LIMITS.maxFps.max);
+        // Through the setters, so a hand-edited file lands in exactly the same
+        // clamps as a slider. Note what the default fps does NOT do: raising
+        // `maxFps` leaves the stream at 5 until someone asks for more.
+        this.fps = Math.min(this.maxFps, DEFAULTS.fps);
+        this.setFps(o.fps);
+        this.occupancyBudget = DEFAULTS.occupancyBudget;
+        this.setOccupancyBudget(o.occupancyBudget);
+        this.maxPerWindow = DEFAULTS.maxPerWindow;
+        this.setDutyCap(o.maxPerWindow);
         this.windowMs = o.windowMs;
         this.keepaliveMs = o.keepaliveMs;
         this.smoothingFactor = o.smoothingFactor;
@@ -133,6 +274,10 @@ export class Pacer {
         this.maxFastPerSec = o.maxFastPerSec;
         this.fastWindowMs = o.fastWindowMs;
         this.fastSmoothingMs = o.fastSmoothingMs;
+        this.burstFps = o.burstFps;
+        this.burstMaxMs = o.burstMaxMs;
+        this.burstCreditMs = o.burstCreditMs;
+        this.burstRefill = o.burstRefill;
         this.xyThreshold = o.xyThreshold ?? XY_THRESHOLD;
         this.briThreshold = o.briThreshold ?? BRI_THRESHOLD;
         /**
@@ -155,6 +300,25 @@ export class Pacer {
         this.busy = [];
         /** Fast frame timestamps in the rolling `fastWindowMs` window. */
         this.fastTimes = [];
+        /**
+         * The token bucket, in COORDINATOR milliseconds: budget that wall
+         * clock time has granted and no frame has spent. Quiet scenes fill it,
+         * a burst empties it, and every send settles the account whether it
+         * was a burst frame or not, so what the bucket buys is a rearrangement
+         * of the budget in time, never more of it.
+         */
+        this.credit = 0;
+        /**
+         * When credit was last accrued, or `null` before the first
+         * `decide()`. Deliberately not 0: `now` is supplied by the caller, and
+         * a caller whose clock starts at zero (both benches and every test
+         * here) hands us a real timestamp indistinguishable from an "it has
+         * never run" sentinel of 0. The bucket would then re-arm on every
+         * call and accrue nothing at all.
+         */
+        this.creditAt = null;
+        /** A burst is running until this time, or 0 when none is. */
+        this.burstUntil = 0;
 
         this.counters = {
             offered: 0,
@@ -169,12 +333,67 @@ export class Pacer {
              * spent. Stays near 0 on film, climbs on a constant strobe.
              */
             fastCapped: 0,
+            /** Bursts started. */
+            bursts: 0,
+            /** Frames sent inside a burst, i.e. paid for out of the bucket. */
+            burstFrames: 0,
         };
+
+        // The clamp, once, for whatever the caller passed. The constructor
+        // used to take the numbers as given, which was fine while they came
+        // from this file; they now come from a hand-edited JSON file.
+        this.tune(opts);
     }
 
     /**
-     * Target fps from MQTT; everything else adapts. Clamped to MAX_FPS, which
-     * also catches an old 12 restored by HA from a retained `number` state.
+     * The range for one knob on THIS pacer. Almost always just `LIMITS[key]`;
+     * the exception is `burstFps`, whose ceiling has to follow a `maxFps`
+     * raised past `BURST_MAX_FPS`. Without this, a dedicated coordinator
+     * running at 17 fps would have a "burst" pinned to 15, i.e. a brake
+     * wearing a burst's name.
+     *
+     * A method rather than a second constant, because the answer depends on a
+     * configured value and `LIMITS` is shared by every pacer in the process.
+     */
+    limit(key) {
+        const { min, max, step } = LIMITS[key];
+        if (key === "burstFps") return { min, max: Math.max(max, this.maxFps), step };
+        return { min, max, step };
+    }
+
+    /**
+     * Apply tuning knobs, each clamped to `LIMITS`. One path for the
+     * constructor and for a re-read of `huelink.config.json`, so a value set
+     * while running lands in exactly the same place as one set at startup.
+     *
+     * Values arrive already validated by `lib/config.mjs`; anything still
+     * unreadable keeps the current value rather than falling back to a
+     * default, the same answer every setter above gives.
+     *
+     * @param {object} values  any subset of `TUNABLE`
+     * @returns {string[]} the keys whose value actually changed
+     */
+    tune(values = {}) {
+        const changed = [];
+        for (const key of TUNABLE) {
+            if (!Object.hasOwn(values, key)) continue;
+            const value = toFinite(values[key]);
+            if (value === null) continue;
+            const { min, max } = this.limit(key);
+            const next = clamp(value, min, max);
+            if (next === this[key]) continue;
+            this[key] = next;
+            changed.push(key);
+        }
+        return changed;
+    }
+
+    /**
+     * Target fps from MQTT; everything else adapts. Clamped to `maxFps`, the
+     * configured ceiling, which also catches an old 12 restored by HA from a
+     * retained `number` state. Lowering the ceiling in the file is therefore
+     * enough to pull a stale saved value back down on the next start, which
+     * is the reason the clamp stayed when the number became configurable.
      *
      * Every setter below REFUSES a value that is not a number instead of
      * falling back to a default. The old `Number(x) || DEFAULTS.fps` had the
@@ -189,7 +408,7 @@ export class Pacer {
     setFps(fps) {
         const value = toFinite(fps);
         if (value === null) return false;
-        this.fps = clamp(value, 1, MAX_FPS);
+        this.fps = clamp(value, 1, this.maxFps);
         return true;
     }
 
@@ -197,7 +416,8 @@ export class Pacer {
     setOccupancyBudget(pct) {
         const value = toFinite(pct);
         if (value === null) return false;
-        this.occupancyBudget = clamp(value, 0.05, 0.9);
+        const { min, max } = LIMITS.occupancyBudget;
+        this.occupancyBudget = clamp(value, min, max);
         return true;
     }
 
@@ -274,6 +494,67 @@ export class Pacer {
     }
 
     /**
+     * What one send is expected to cost right now. Measured once frames have
+     * gone out, since a slow coordinator makes every frame dearer and the
+     * bucket has to know that; `NOMINAL_SEND_MS` only covers the first frames.
+     */
+    get sendPrice() {
+        return this.durations.filled ? this.durations.mean : NOMINAL_SEND_MS;
+    }
+
+    /**
+     * Grant the budget that wall clock time has earned since the last call.
+     *
+     * The bucket is filled by TIME, not by skipped frames: `occupancyBudget`
+     * of every elapsed millisecond is budget we were entitled to spend, and
+     * `noteSent` takes back every millisecond a frame actually cost. So the
+     * balance IS "budget granted minus budget used", and capping it at
+     * `burstCreditMs` is what stops an hour of darkness from buying a minute
+     * of 15 fps.
+     */
+    #accrue(now) {
+        if (this.creditAt === null) {
+            this.creditAt = now;
+            return;
+        }
+        const elapsed = now - this.creditAt;
+        if (elapsed <= 0) return;
+        this.creditAt = now;
+        const earned = elapsed * this.occupancyBudget * this.burstRefill;
+        this.credit = Math.min(this.credit + earned, this.burstCreditMs);
+    }
+
+    /**
+     * Is a burst running, and may it continue.
+     *
+     * A burst starts on the same signal as the fast path, a change over
+     * `bigChangeThreshold`, because that is the one moment the stream is
+     * demonstrably behind the picture. The difference is duration: the fast
+     * path moves ONE frame, a burst raises the clock for up to `burstMaxMs`.
+     *
+     * It ends on whichever comes first: the clock, or an empty bucket. The
+     * bucket is the one that matters, and it is why a burst cannot be
+     * re-armed indefinitely: each run spends more than it earns, so a second
+     * run can only have what the first one left.
+     */
+    #bursting(now, over) {
+        if (this.burstFps <= 0 || this.burstMaxMs <= 0) return false;
+        const price = this.sendPrice;
+        if (now < this.burstUntil) {
+            if (this.credit >= price) return true;
+            this.burstUntil = 0;
+            return false;
+        }
+        // Never start a frame the bucket cannot pay for: the debt would be
+        // settled out of the NEXT quiet scene, which is the one place the
+        // budget is supposed to be a promise rather than an average.
+        if (!over || this.credit < price) return false;
+        this.burstUntil = now + this.burstMaxMs;
+        this.counters.bursts++;
+        return true;
+    }
+
+    /**
      * Share of the last second the coordinator spent on OUR frames.
      * The divisor is the fixed window, not time since the first entry: a
      * shrinking divisor reads absurdly high right after a send and would
@@ -298,6 +579,7 @@ export class Pacer {
     decide(colors, now = Date.now()) {
         this.counters.offered++;
         this.#trim(now);
+        this.#accrue(now);
 
         // Perceptual space is computed BEFORE the gates, not after: the clock
         // decision now depends on the magnitude of the change. Measured at
@@ -309,10 +591,14 @@ export class Pacer {
         const over = mag >= this.bigChangeThreshold;
         const big = over && this.fastTimes.length < this.maxFastPerSec;
         if (over && !big) this.counters.fastCapped++;
+        // The burst reads the same signal but answers the other half of it:
+        // the fast path rescues one frame, this raises the clock for a while.
+        // Off unless `burstFps` was set, so by default nothing below changes.
+        const burst = this.#bursting(now, over);
 
         // 1. Target fps. A scene cut does not wait for the clock: that is where
         //    latency is visible, and cuts are rare, so it costs almost nothing.
-        const minGap = 1000 / this.fps;
+        const minGap = 1000 / (burst ? Math.max(this.fps, this.burstFps) : this.fps);
         if (!big && this.lastSendAt && now - this.lastSendAt < minGap) {
             return null; // not yet due; this is the clock, not a skip
         }
@@ -326,7 +612,15 @@ export class Pacer {
         // 3. Duty cap, adaptive part: the occupancy budget. This is what
         //    actually protects the house, and it binds the fast path too, so
         //    the fast path cannot raise the worst case.
-        if (this.occupancy(now) >= this.occupancyBudget) {
+        //
+        //    A burst is the one documented exception, and it is an exception
+        //    to WHEN the budget is measured, not to how much there is: the
+        //    bucket already holds budget that earlier seconds did not spend,
+        //    and `#bursting` refused to start without enough of it. The hard
+        //    per-window cap above still applies, so even mid-burst at most
+        //    `maxPerWindow` of our frames can be queued ahead of the rest of
+        //    the house at any instant.
+        if (!burst && this.occupancy(now) >= this.occupancyBudget) {
             this.counters.skippedDuty++;
             return null;
         }
@@ -343,10 +637,15 @@ export class Pacer {
         }
 
         if (big) this.counters.fast++;
+        if (burst) this.counters.burstFrames++;
         return {
             perceptual: next,
+            // A burst frame is NOT a fast frame: it takes the ordinary fade,
+            // computed from the gap the burst itself just shortened, so the
+            // stream speeds up without every frame also turning into a cut.
             smoothingMs: big ? this.fastSmoothingMs : this.smoothingMs(),
             fast: big,
+            burst,
         };
     }
 
@@ -367,6 +666,12 @@ export class Pacer {
         this.sendTimes.push(now);
         this.durations.push(durationMs);
         this.busy.push([now, durationMs]);
+        // Every send is paid out of the bucket, burst or not. That single line
+        // is what makes the budget a long-term average rather than a hole: a
+        // burst can only spend what quiet scenes put in, and the floor stops a
+        // coordinator stall from inventing a debt that takes minutes of
+        // darkness to work off.
+        this.credit = Math.max(this.credit - durationMs, -this.burstCreditMs);
         this.counters.sent++;
     }
 
@@ -379,6 +684,10 @@ export class Pacer {
         this.fastTimes = [];
         this.intervals = new Ring(40);
         this.durations = new Ring(40);
+        // The burst goes, the bucket stays. A mode change says nothing about
+        // the coordinator: the budget those seconds earned was real, and
+        // handing it back would make every mode change a free burst.
+        this.burstUntil = 0;
     }
 
     /**
@@ -395,7 +704,7 @@ export class Pacer {
 
     /** Numbers for MQTT state and reporting. */
     stats(now = Date.now()) {
-        const { offered, sent, skippedDelta, skippedDuty, keepalive, fast, fastCapped } =
+        const { offered, sent, skippedDelta, skippedDuty, keepalive, fast, fastCapped, bursts, burstFrames } =
             this.counters;
         return {
             offered,
@@ -405,6 +714,13 @@ export class Pacer {
             keepalive,
             fast,
             fastCapped,
+            bursts,
+            burstFrames,
+            // The bucket, in coordinator ms. Next to its own counters for the
+            // same reason as `deltaScalePct`: `bursts: 0` with an empty bucket
+            // is the limiter working, with a full one it is the content never
+            // asking, and from outside those look identical.
+            creditMs: Math.round(this.credit),
             deltaHitPct: offered ? Math.round((skippedDelta / offered) * 1000) / 10 : 0,
             occupancyPct: Math.round(this.occupancy(now) * 1000) / 10,
             avgSendMs: Math.round(this.durations.mean * 10) / 10,
@@ -419,6 +735,10 @@ export class Pacer {
             // `skippedDelta` without `deltaScalePct` is a number without a scale.
             deltaScalePct: Math.round(this.deltaScale * 100),
             dutyCap: this.maxPerWindow,
+            // The configured ceiling, published because it is otherwise
+            // invisible: a slider that refuses to go past 5 looks the same
+            // whether the file was read or quietly ignored.
+            maxFps: this.maxFps,
         };
     }
 }

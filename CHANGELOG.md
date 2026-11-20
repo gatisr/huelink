@@ -4,6 +4,20 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.2.0
+
+The strip no longer strands itself dark, and follows a capture card that keeps sending black only as long as there is something to show.
+
+### Added
+
+- **A black gate on the sync source.** Some capture cards keep sending black frames after their input stops, so "the TV is off" never arrives. Frames whose every channel is at or below 16 are dropped once they have been unbroken for 20 seconds, and one lit frame ends the run. The source then ages out through the path it already had for a source that stopped.
+- **A tripped breaker reopens by itself.** A trip clears the arming on purpose, but nothing used to restore it once the strip recovered. zigbee2mqtt already reports every Zigbee frame it hears from the strip, so that report now closes the breaker, and nothing extra is sent on the air. What returns is the waiting, not the light: the mode is re-armed and the strip comes back when frames do. A five minute floor limits a strip that answers but refuses frames to one re-trip per five minutes.
+
+### Fixed
+
+- **Our own `OFF` no longer cancels the arming it caused.** A source that goes quiet and returns within a second sends `OFF`, arms sync and is back `ON` before the `OFF` report arrives. The report was then read as a person pressing off, and the strip stayed dark with frames arriving. Power commands we send are now recorded and recognised when they are reported back; a report nobody here caused (wall switch, Home Assistant) still cancels the arming.
+- **The two black-gate log lines are translated.** They need a full zigbee2mqtt restart to take effect, not an extension reload.
+
 ## 1.1.0
 
 Tuning without editing code. Every pacing number that used to be a constant is now a field in `huelink.config.json`, most of them re-read while zigbee2mqtt runs. **Nothing changes for an installation that does not touch the file**: every default is the value the constant had, the new burst ships off, and `test/tuning.test.mjs` holds that line three independent ways.

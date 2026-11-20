@@ -126,7 +126,7 @@ function harness({ failing, echo = false, echoMs = 80 }) {
         // mean an error on EVERY `publishExposes` call, and that would look
         // like an extension fault rather than a missing test harness.
         async () => {},
-        { onMQTTMessage() {}, onPublishEntityState() {}, removeListeners() {} },
+        { onMQTTMessage() {}, onPublishEntityState() {}, onLastSeenChanged() {}, removeListeners() {} },
         null,
         null,
         null,
@@ -262,6 +262,52 @@ async function testResumeOnExplicitCommand() {
     await h.link.stop();
     assert.ok(h.sends.length > before + 5, "frames must flow again after resuming");
     console.log(`  ${h.sends.length - before} more sends after resuming`);
+}
+
+async function testProofOfLifeReopensTheBreaker() {
+    // A TRIP USED TO BE A DEAD END. It clears `armed`, so nothing could relight
+    // the strip and only a person sending a command could undo it. The strip itself is the one thing that knows when it is back, and
+    // z2m reports every frame it hears from it, so that report is what reopens
+    // the breaker -- without anything of ours going out on the air to ask.
+    const h = harness({ failing: true });
+    await h.link.start();
+    await h.link.setMode(MODE_LABEL.sync);
+    let fed = feed(h.link);
+    assert.ok(await waitForTrip(h.link), "the breaker should have tripped");
+    clearInterval(fed);
+    assert.strictEqual(h.link.armed, null, "a trip still arms nothing at the moment it happens");
+
+    // Noise from the rest of the house is not evidence about this strip.
+    await h.link.onProofOfLife({ name: "Some other lamp" });
+    assert.ok(h.link.tripped, "another device saying hello must not reopen the breaker");
+
+    // The strip itself, but too soon. A strip that answers pings while refusing
+    // entertainment frames would otherwise trip and reopen in a tight loop, and
+    // every turn of that loop costs the coordinator five failed sends.
+    await h.link.onProofOfLife({ name: CONFIG.device });
+    assert.ok(h.link.tripped, "inside the dwell even the strip itself is not enough");
+    assert.strictEqual(h.link.armed, null, "and nothing is armed yet");
+
+    // Past the dwell, and this time the strip really is back.
+    h.link.trippedAt -= 600_000;
+    h.revive();
+    await h.link.onProofOfLife({ name: CONFIG.device });
+    assert.strictEqual(h.link.tripped, null, "proof of life must reopen the breaker");
+    assert.strictEqual(h.link.armed, "sync", "and restore the waiting the trip threw away");
+    // ARMED, not lit: being reachable is not the same as the TV being on, so a
+    // strip that comes back to a dark room waits exactly as it would after any
+    // other quiet source.
+    assert.strictEqual(h.link.arbiter.power, false, "reachable is not a reason to switch on");
+
+    // And the arming is real: frames light it again, with nobody pressing
+    // anything.
+    const before = h.sends.length;
+    fed = feed(h.link);
+    await sleep(900);
+    clearInterval(fed);
+    await h.link.stop();
+    assert.ok(h.sends.length > before + 3, `frames must flow again by themselves, got ${h.sends.length - before}`);
+    console.log(`  trip -> strip says hello -> re-armed, ${h.sends.length - before} sends with no command`);
 }
 
 async function testBackoffRecovers() {
@@ -543,10 +589,18 @@ async function testExposesEchoDoesNotFlipPower() {
     // press carrying the strip's stale cached power, the wrong power flipped
     // the output, the next tick sent the opposite light command, and its echo
     // flipped it back: ON/OFF oscillation at several hertz.
-    const h = harness({ failing: false });
+    //
+    // An ECHOING harness, and a pause before the press. Our own commands are
+    // recognised on the way back from a record of what we sent
+    // (`#wasSelfState`), so a press landing INSIDE our own command's round
+    // trip is genuinely indistinguishable from its echo and is meant to be
+    // dropped. Letting the round trips finish first is what makes the press
+    // below a press rather than a coincidence.
+    const h = harness({ failing: false, echo: true });
     await h.link.start();
     await h.link.setMode(MODE_LABEL.light);
     assert.strictEqual(h.link.arbiter.power, true, "light mode means power on");
+    await sleep(200);
 
     // Exactly the shape z2m emits: `payload` is the delta, `message` the cache.
     // The cache still says OFF because the strip has not reported its new state
@@ -570,6 +624,79 @@ async function testExposesEchoDoesNotFlipPower() {
 
     await h.link.stop();
     console.log("  expose echo ignored, a real press still lands");
+}
+
+async function testBlackFlashDoesNotStrandTheStrip() {
+    // THE DEADLOCK THE BLACK GATE OPENED. The gate drops black frames, so a
+    // dark moment on screen looks to the rest of the extension exactly like the
+    // TV switching off: the source goes quiet, the strip is switched off, and
+    // sync is armed. When the picture comes back a fraction of a second later,
+    // the next tick lights the strip again - all of it before the strip has
+    // reported the OFF.
+    //
+    // That report then arrived at `#entityState` with power already back ON,
+    // disagreed with it, and was therefore read as somebody pressing off: it
+    // cleared the arming, dropped the power and put the mode back to light.
+    // Nothing lights an unarmed strip, so it stayed dark with
+    // Hyperion sending the whole time. The
+    // extension's own counters stood still, which is how it was found.
+    //
+    // ECHO ON, and SLOW: the whole fault lives in the gap between the command
+    // and its report, so a harness that answers instantly cannot reproduce it.
+    const h = harness({ failing: false, echo: true, echoMs: 400 });
+    await h.link.start();
+    // Let the startup OFF finish its round trip before anything else happens.
+    // Not politeness: that command is the SAME race in miniature, and leaving
+    // it in flight would fail this case before the flash it is about.
+    await sleep(600);
+    await h.link.setMode(MODE_LABEL.sync);
+    let fed = feed(h.link);
+    await sleep(600);
+    assert.strictEqual(h.link.output, "sync", "sync really is running first");
+
+    // The screen goes black: the gate stops passing frames on, so the source
+    // ages out exactly as a switched-off TV would.
+    clearInterval(fed);
+    await sleep(1200); // longer than sourceTtlMs
+    assert.strictEqual(h.link.armed, "sync", "a quiet source arms sync");
+    assert.strictEqual(h.link.arbiter.power, false, "and switches the strip off");
+
+    // The picture is back, well inside the OFF's round trip.
+    fed = feed(h.link);
+    await sleep(1200); // long enough for both echoes to land
+    clearInterval(fed);
+
+    assert.strictEqual(h.link.arbiter.power, true, "the strip must light itself again");
+    assert.strictEqual(h.link.armed, null, "once it is back, the waiting is over");
+    assert.strictEqual(h.link.output, "sync", `the strip should sync again, was ${h.link.output}`);
+    const st = lastState(h.published);
+    assert.strictEqual(st.power, "ON", `power should be ON, was ${st.power}`);
+    // THE SIGNATURE OF THE BUG, and the thing to grep the live log for: mode
+    // back on light with nothing armed, moments after "sync resumes".
+    assert.strictEqual(st.mode, MODE_LABEL.sync, `our own OFF must not put the mode back to light, was ${st.mode}`);
+    assert.strictEqual(st.output, "sync", `the strip must actually be streaming, was ${st.output}`);
+
+    // And it is not stranded afterwards either: frames keep flowing.
+    const before = h.sends.filter((s) => s === "cmd:1").length;
+    fed = feed(h.link);
+    await sleep(900);
+    clearInterval(fed);
+    const frames = h.sends.filter((s) => s === "cmd:1").length - before;
+    assert.ok(frames > 3, `frames must keep flowing after the flash, got ${frames}`);
+
+    // THE CONVERSE, on the same run: a report nobody here caused is still
+    // obeyed. Without this the fix would just be a deafer listener, and the
+    // wall switch would stop working.
+    await h.link.onEntityState({
+        entity: { name: CONFIG.device },
+        message: { state: "OFF", brightness: 254 },
+        payload: { state: "OFF" },
+    });
+    assert.strictEqual(h.link.arbiter.power, false, "a wall switch OFF must still be obeyed");
+    assert.strictEqual(h.link.armed, null, "and must still cancel the waiting");
+
+    await h.link.stop();
+    console.log(`  black flash -> sync resumes and keeps streaming (${frames} frames); a real OFF still lands`);
 }
 
 async function testOffNeverPublishesALitOutput() {
@@ -763,6 +890,7 @@ const tests = [
     ["a trip switches off, it does not light up", testTripDoesNotLightTheStrip],
     ["a healthy stream is left alone", testHealthyStreamUnaffected],
     ["an explicit command resumes", testResumeOnExplicitCommand],
+    ["the strip saying hello resumes", testProofOfLifeReopensTheBreaker],
     ["backoff recovers", testBackoffRecovers],
     ["source went quiet -> strip switches off", testSourceSilenceTurnsStripOff],
     ["an armed strip lights itself", testArmedRelightsItself],
@@ -772,6 +900,7 @@ const tests = [
     ["the backoff window holds commands back too", testBackoffHoldsOffCommandsToo],
     ["light mode stays lit", testUserLightModeStaysLit],
     ["an expose echo does not flip power", testExposesEchoDoesNotFlipPower],
+    ["a black flash does not strand the strip", testBlackFlashDoesNotStrandTheStrip],
     ["OFF never publishes a lit output", testOffNeverPublishesALitOutput],
     ["a restart does not start a ping-pong", testRestartDoesNotStartAPingPong],
     ["commands are invisible to the core router", testCommandTopicIsInvisibleToTheCore],

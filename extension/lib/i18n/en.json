@@ -63,6 +63,8 @@
   "log.sourceEndedArmed": "{mode} ended: the source went quiet ({ttl} ms without a frame), strip turned off, waiting for frames to come back",
   "log.sourceQuiet": "{mode} selected, but the source is quiet: strip turned off",
   "log.sourceQuietArmed": "{mode} selected, but the source is quiet: strip turned off, waiting for frames",
+  "log.blackGated": "the sync source has been black for {seconds} s: treating it as no signal, the strip goes off until a lit frame arrives",
+  "log.blackEnded": "the sync source has light in it again: sync resumes",
   "log.tripped": "{mode} stopped, strip turned off: the strip is not responding ({limit} frames in a row, last error: {error})",
   "log.retrying": "trying again (was stopped: {mode})",
   "log.lightFailed": "strip '{state}' failed: {error}",

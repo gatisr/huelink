@@ -42,7 +42,7 @@ import { MODE_BY_LABEL, MODE_LABEL, SETTABLE_KEYS } from "./lib/huelink-ui.mjs";
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.1.0";
+export const VERSION = "1.2.0";
 
 /**
  * When this Node process started, ISO-8601.
@@ -91,6 +91,24 @@ const FAIL_LIMIT = 5;
 const FAIL_BACKOFF_MS = [200, 1000, 3000];
 
 /**
+ * How long a tripped breaker stays shut no matter what the strip says.
+ *
+ * The breaker is closed by PROOF OF LIFE, not by a clock: zigbee2mqtt tells us
+ * whenever it hears a Zigbee frame from the strip, so the strip itself says
+ * when it is worth another try and no probe of our own has to go out to ask.
+ * Without this floor, though, a strip that answers pings while refusing
+ * entertainment frames would close the breaker the moment it tripped, and the
+ * two would take turns for ever.
+ *
+ * Five minutes is the ceiling on that loop rather than a guess at a repair
+ * time: a re-trip costs `FAIL_LIMIT` failed frames at ~6 s of coordinator time
+ * each, so the very worst case this allows is about 30 s of occupancy in every
+ * 5 min. The cost of being wrong the other way is the strip sitting dark while
+ * the TV plays, which is what used to happen.
+ */
+const TRIP_DWELL_MS = 300_000;
+
+/**
  * How long a command handler waits for a tick to let go of the radio before it
  * carries out the new decision (see `settle`). Long enough to outlast an
  * ordinary frame, short enough that HA never notices: giving up here means
@@ -115,8 +133,28 @@ const UDP_REJECT_WINDOW_MS = 60_000;
 const UDP_REJECT_MAX_SENDERS = 8;
 
 /**
+ * BLACK GATE. How long an unbroken run of black frames must last before those
+ * frames stop counting as a live source, and the highest value a channel may
+ * hold for a frame to be called black. See `#blackGated`.
+ *
+ * Here rather than in `huelink.config.json` on purpose, even though
+ * `BLACK_LEVEL` does depend on the capture hardware. z2m reloads an extension
+ * by re-importing THIS file from a temp copy; `lib/` keeps its place in the
+ * module cache and is not re-read. A knob added to lib/config.mjs therefore
+ * does not exist until zigbee2mqtt is restarted, which takes the whole Zigbee
+ * network down, while a constant here is retuned by one more extension save.
+ *
+ * `BLACK_LEVEL` is not 0: a grabber handed limited-range video and reading it
+ * as full range reports black as 16, and noise moves the last bits about
+ * regardless. Being generous costs little, since a frame this dark lights the
+ * strip barely at all.
+ */
+const BLACK_TIMEOUT_MS = 20_000;
+const BLACK_LEVEL = 16;
+
+/**
  * How long a command we published to the strip's own `/set` is recognised as
- * our own when z2m hands it straight back. See `#wasSelfSent`.
+ * our own when it comes back. See `#wasSelfSent` and `#wasSelfState`.
  *
  * Generous against an MQTT round trip, which is tens of milliseconds, and
  * short against a person: the cost of being wrong is that one genuine press
@@ -234,6 +272,14 @@ export default class HueLink {
         /** Mode the breaker tripped in, or `null`. While set, nothing is sent. */
         this.tripped = null;
         /**
+         * When it tripped, and the mode KEY it tripped in. `tripped` itself
+         * holds the translated label, which is the right thing to show a person
+         * and the wrong thing to re-arm from. Both only mean anything while
+         * `tripped` is set. See `onProofOfLife`.
+         */
+        this.trippedAt = 0;
+        this.trippedMode = null;
+        /**
          * ARMED: the mode whose frames we are waiting for, or `null`. The strip
          * is off, but the choice still stands, so the first frame to arrive
          * lights it again. Only an external source (`sync`) can be armed, and
@@ -258,10 +304,24 @@ export default class HueLink {
          */
         this.udpRejected = { packets: 0, senders: new Set(), truncated: false, reportAt: 0 };
         /**
+         * BLACK GATE state. `since` is when the current unbroken run of black
+         * frames began (0 for "the last frame had light in it"), `closed` is
+         * whether that run has already passed `blackTimeoutMs` and is being
+         * dropped. See `#blackGated`.
+         */
+        this.black = { since: 0, closed: false };
+        /**
          * Commands we published to the strip's own `/set`, waiting to be
          * recognised when z2m hands them back. See `#wasSelfSent`.
          */
         this.selfSent = [];
+        /**
+         * The SAME commands again, as bare power states, for the second way
+         * back: the strip's own state report on the event bus. A separate list
+         * because the two arrive as separate events, so one entry cannot serve
+         * both. See `#wasSelfState`.
+         */
+        this.selfState = [];
     }
 
     /** Transport: the real Zigbee endpoint. */
@@ -340,8 +400,11 @@ export default class HueLink {
 
         // A restart is not a choice. After it the strip is OFF and armed on
         // sync, never light: the only thing that may light it by itself is a
-        // real frame. This deliberately does not read the TV state; HA already
-        // owns that decision. See docs/DESIGN.md.
+        // real frame. This deliberately does not read the TV state, and does
+        // not need to. Whether the TV is on is not a fact to be fetched from
+        // some other system that may itself be restarting; it is the presence
+        // of lit frames on the UDP port, which this process can see for
+        // itself one tick from now. See docs/DESIGN.md.
         this.arbiter.power = false;
         this.arbiter.requested = MODE_LIGHT;
         this.armed = MODE_SYNC;
@@ -373,7 +436,12 @@ export default class HueLink {
                 return;
             }
             const leds = parseLeds(buf, CONFIG.segments);
-            if (leds) this.sources.sync.put(leds);
+            if (!leds) return;
+            // A black frame is still a frame, and that is the problem: see
+            // `#blackGated`. Dropping it here rather than anywhere later is
+            // what makes the rest of the extension need no new code at all.
+            if (this.#blackGated(leds)) return;
+            this.sources.sync.put(leds);
         });
         this.udp.on("error", (e) => this.logger.error(`[huelink] ${t("log.udpError", { error: e.message })}`));
         this.udp.bind(CONFIG.udpPort, CONFIG.udpBind);
@@ -394,6 +462,10 @@ export default class HueLink {
         // switch, a Zigbee binding or the z2m web UI changes the state
         // directly, and the published state is where everyone sees it.
         this.eventBus.onPublishEntityState(this, (data) => this.onEntityState(data));
+        // Third path, and a listener rather than a sender: zigbee2mqtt raises
+        // this on every Zigbee frame it receives, so it is how a strip that has
+        // tripped the breaker tells us it is back, at no cost on the air.
+        this.eventBus.onLastSeenChanged(this, (data) => void this.onProofOfLife(data?.device));
 
         // Settle window before the first decision: commands from the previous
         // life are still in flight (an extension reload calls `stop()` on the
@@ -539,6 +611,60 @@ export default class HueLink {
         r.reportAt = now + UDP_REJECT_WINDOW_MS;
     }
 
+    /**
+     * BLACK GATE: `true` when this frame must NOT count as a live source.
+     *
+     * The chain upstream is TV -> capture card -> Hyperion -> here, and a
+     * capture card is under no obligation to stop when its input does. Many
+     * keep sending flawless black frames forever, which `sourceTtlMs` cannot
+     * tell apart from a film in a dark room: the source stays live, the strip
+     * stays on, and "the TV is off" never reaches us. Externally arranging for
+     * the stream to stop (switching the grabber off from elsewhere when the TV
+     * goes off) is the obvious fix and the wrong one, because then the thing
+     * deciding whether the strip follows the TV is some other process that can
+     * be restarted, be wrong, or simply not be running.
+     *
+     * So the decision lives here, in the only component that sees the frames.
+     * The rule is deliberately dull: a frame is black when no channel of any
+     * segment is above `BLACK_LEVEL`, and black frames are only dropped once
+     * they have been unbroken for `BLACK_TIMEOUT_MS`. One lit frame ends the
+     * run immediately, in full, with no hysteresis to unwind. A timeout, not a
+     * frame count: the grabber's frame rate is not ours to assume.
+     *
+     * Dropping is the entire action. The source then goes quiet on its own TTL
+     * and `tick()` runs the path it has always run for a source that stopped:
+     * strip off, armed on sync, lit again by the first frame that returns. No
+     * second state machine, and nothing here that can leave the strip off
+     * while frames are arriving.
+     */
+    #blackGated(colors) {
+        const lit = colors.some((c) => c.r > BLACK_LEVEL || c.g > BLACK_LEVEL || c.b > BLACK_LEVEL);
+        if (lit) {
+            if (this.black.closed) {
+                this.logger.info(`[huelink] ${t("log.blackEnded")}`);
+            }
+            this.black.since = 0;
+            this.black.closed = false;
+            return false;
+        }
+
+        const now = Date.now();
+        // First black frame of a run: remember when, and pass it on. Until the
+        // run is long enough the frames are ordinary frames, because a black
+        // SCENE is a legitimate thing for the strip to show.
+        if (!this.black.since) {
+            this.black.since = now;
+            return false;
+        }
+        if (now - this.black.since < BLACK_TIMEOUT_MS) return false;
+
+        if (!this.black.closed) {
+            this.black.closed = true;
+            this.logger.info(`[huelink] ${t("log.blackGated", { seconds: Math.round(BLACK_TIMEOUT_MS / 1000) })}`);
+        }
+        return true;
+    }
+
     /** Effect names for the HA select. No "none": that is a mode, not an effect. */
     get effectOptions() {
         return this.effects.effects.map((e) => e.name);
@@ -671,7 +797,10 @@ export default class HueLink {
      * consecutive ones give up, stop the stream, turn the strip off and log a
      * single line. The strip goes OFF rather than to light, because the user
      * asked for sync and it ended; and `armed` is not set, because a failure is
-     * not an idle source. See docs/DESIGN.md.
+     * not an idle source, and an armed mode would light the strip again on the
+     * very next frame, which is the loop this exists to end. What the mode WAS
+     * is remembered instead, for `onProofOfLife` to arm from once the strip has
+     * shown it is back. See docs/DESIGN.md.
      */
     async onFailure(error) {
         this.failures++;
@@ -681,8 +810,11 @@ export default class HueLink {
             return;
         }
 
-        const label = MODE_LABEL[this.arbiter.requested] ?? this.arbiter.requested;
+        const mode = this.arbiter.requested;
+        const label = MODE_LABEL[mode] ?? mode;
         this.tripped = label;
+        this.trippedAt = Date.now();
+        this.trippedMode = mode;
         this.failures = 0;
         this.retryAt = 0;
         this.armed = null;
@@ -718,17 +850,55 @@ export default class HueLink {
     }
 
     /**
-     * Closes a tripped breaker. Called ONLY from an explicit command (power or
-     * mode): that is the one moment someone demonstrably wants sending to
-     * resume. A timer here would be wrong, it would start hammering an
-     * unreachable strip by itself.
+     * Closes a tripped breaker. Called from an explicit command (power or
+     * mode), which is the one moment someone demonstrably wants sending to
+     * resume, and from `onProofOfLife`. NOT from a timer: a clock knows nothing
+     * about the strip, so it would start hammering an unreachable one by
+     * itself, which is the behaviour the breaker exists to stop.
      */
     resume() {
         if (!this.tripped) return;
         this.logger.info(`[huelink] ${t("log.retrying", { mode: this.tripped })}`);
         this.tripped = null;
+        this.trippedAt = 0;
+        this.trippedMode = null;
         this.failures = 0;
         this.retryAt = 0;
+    }
+
+    /**
+     * zigbee2mqtt heard something from the strip. If the breaker is tripped,
+     * this is the evidence that reopening it is worth the air.
+     *
+     * A trip used to be a dead end: it clears `armed`, so no frame could ever
+     * light the strip again and only a person sending a command could undo it.
+     * That is correct the instant it happens, and wrong an hour later, when the
+     * strip is fine and the only thing still broken is that nobody told us.
+     *
+     * The strip itself is the one thing that knows when it is back, and
+     * zigbee2mqtt already raises `lastSeenChanged` on every Zigbee frame it
+     * receives, so reading that costs NOTHING on the air: no ping of ours, no
+     * probe, nothing sent to a device that may not be there. A clock-driven
+     * retry would be the opposite, which is why it is not one.
+     *
+     * Hearing from the strip is not a promise that entertainment frames will
+     * work, only that it is reachable, so the first thing re-arming does is
+     * offer it one more chance to fail. `TRIP_DWELL_MS` is the floor that keeps
+     * that from becoming a loop. Re-arming rather than relighting also means a
+     * strip that comes back while the TV is off just waits, exactly as it would
+     * have after any other quiet source.
+     */
+    async onProofOfLife(device) {
+        if (!this.tripped) return;
+        if (device?.name !== CONFIG.device) return;
+        if (Date.now() - this.trippedAt < TRIP_DWELL_MS) return;
+        // Only a mode with a source of its own can be armed: there is nothing
+        // to wait for in light mode, and arming it would turn a dead breaker
+        // into a strip that switches itself on.
+        const mode = this.trippedMode === MODE_SYNC || this.trippedMode === MODE_EFFECT ? this.trippedMode : null;
+        this.resume();
+        this.armed = mode;
+        await this.publishState();
     }
 
     /**
@@ -788,8 +958,14 @@ export default class HueLink {
         // Noted BEFORE the publish for the same reason as `stripState`: the
         // echo can be back before the `await` returns. An entry left behind by
         // a failed publish expires by itself.
-        this.selfSent.push({ payload, at: Date.now() });
+        const at = Date.now();
+        this.selfSent.push({ payload, at });
         if (this.selfSent.length > SELF_ECHO_MAX) this.selfSent.shift();
+        // And once more for the other return path. `#wasSelfSent` cannot cover
+        // it: that entry is consumed by the `/set` echo, which arrives first
+        // and is a different event from the state report that follows it.
+        this.selfState.push({ state, at });
+        if (this.selfState.length > SELF_ECHO_MAX) this.selfState.shift();
         try {
             await this.mqtt.publish(`${CONFIG.device}/set`, payload, {
                 skipReceive: false,
@@ -1033,6 +1209,46 @@ export default class HueLink {
         return true;
     }
 
+    /**
+     * Is this STATE REPORT the strip repeating a power command we just sent?
+     *
+     * The same question as `#wasSelfSent`, asked of the other way back. A
+     * `/set` we publish returns twice: once as the MQTT message itself, and
+     * once as the strip's state on the event bus after z2m has carried it out.
+     * `#wasSelfSent` only ever saw the first.
+     *
+     * `#entityState` used to tell the two apart by a single test - does the
+     * report AGREE with the power we hold - and that test is only sound while
+     * our own power cannot move between the command and its report. The black
+     * gate made it move routinely: a source that falls silent and returns
+     * inside one second sends `OFF`, arms sync, and is back ON two ticks
+     * later, all before the `OFF` report lands. The report then disagreed with
+     * the power, was read as a person pressing off, and cleared the arming it
+     * had itself caused. Nothing lights the strip after that, so it stayed
+     * dark with frames arriving the whole time. The question that survives a power change is not
+     * "does this match what we hold" but "did we send this", and only a record
+     * of what we sent can answer it.
+     *
+     * Each entry answers for ONE report and is then gone, so a second press of
+     * the same button is still a press. Entries OLDER than the match go with
+     * it: the strip reports in the order it was commanded, so an earlier one
+     * still sitting there belongs to a report that never came, and leaving it
+     * would let it swallow a real press later in the window.
+     *
+     * What this deliberately does NOT cover is a report nobody here caused: a
+     * wall switch, HA, a person. Those leave no record, so they still reach
+     * `setPower` and still clear the arming, which is the whole point of the
+     * distinction.
+     */
+    #wasSelfState(state) {
+        const now = Date.now();
+        while (this.selfState.length > 0 && now - this.selfState[0].at > SELF_ECHO_MS) this.selfState.shift();
+        const i = this.selfState.findIndex((s) => s.state === state);
+        if (i < 0) return false;
+        this.selfState.splice(0, i + 1);
+        return true;
+    }
+
     async #command({ topic, message }) {
         const base = this.settings.get().mqtt.base_topic;
         const stripSet = `${base}/${CONFIG.device}/set`;
@@ -1226,17 +1442,23 @@ export default class HueLink {
         // cannot race. See docs/DESIGN.md.
         const value = String(payload?.state ?? "").toUpperCase();
         if (value !== "ON" && value !== "OFF") return;
+        // Our own command coming back. Dropped whole, before the bookkeeping:
+        // `light()` already wrote this very state into `stripState` when it
+        // published, so there is nothing to learn here, and by the time a
+        // DELAYED echo arrives that record may already have moved on to a
+        // newer command it would overwrite with the older one. See
+        // `#wasSelfState` for why "we sent this" cannot be inferred from the
+        // power we hold.
+        if (this.#wasSelfState(value)) return;
         // The strip itself reporting, so this is the best answer there is to
-        // "what power is it in", whoever caused it: us, HA, a wall switch.
+        // "what power is it in", whoever caused it: HA, a wall switch.
         this.stripState = value;
         // A report that AGREES with the power already held is news about the
-        // STRIP, not an instruction: most of them are the echo of our own last
-        // command. Recorded above, because it is still the best answer to
-        // "what power is the strip in", then dropped here. Until `setPower`
-        // learned to cancel the arming on an unchanged power this made no
-        // difference, as `setPower` returned immediately on the same
-        // comparison; now the difference is whether our own OFF can cancel an
-        // arming nobody asked it to.
+        // STRIP, not an instruction. Recorded above, because it is still the
+        // best answer to "what power is the strip in", then dropped here.
+        // Until `setPower` learned to cancel the arming on an unchanged power
+        // this made no difference, as `setPower` returned immediately on the
+        // same comparison.
         if ((value === "ON") === this.arbiter.power) return;
         await this.setPower(value === "ON");
     }

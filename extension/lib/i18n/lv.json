@@ -63,6 +63,8 @@
   "log.sourceEndedArmed": "{mode} beidzās: avots apklusa ({ttl} ms bez kadra), lente izslēgta, gaida kadrus atpakaļ",
   "log.sourceQuiet": "{mode} izvēlēts, bet avots klusē: lente izslēgta",
   "log.sourceQuietArmed": "{mode} izvēlēts, bet avots klusē: lente izslēgta, gaida kadrus",
+  "log.blackGated": "sync avots ir melns jau {seconds} s: uzskatām, ka signāla nav, lente nodziest līdz pirmajam gaišajam kadram",
+  "log.blackEnded": "sync avotā atkal ir gaisma: sinhronizācija atsākas",
   "log.tripped": "{mode} apturēts, lente izslēgta: lente neatbild ({limit} kadri pēc kārtas, pēdējā kļūda: {error})",
   "log.retrying": "mēģinām vēlreiz (bija apturēts: {mode})",
   "log.lightFailed": "lentes '{state}' neizdevās: {error}",

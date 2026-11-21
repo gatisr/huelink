@@ -10,7 +10,7 @@
  *
  * This file declares only the SHAPE of the fields. Values are published by the
  * extension; writes reach it over the eventBus. The field list itself lives in
- * lib/huelink-ui.mjs so it is written once. Why it is wired this way, and why
+ * huelink-lib/huelink-ui.mjs so it is written once. Why it is wired this way, and why
  * `convertSet` returns nothing, is in docs/DESIGN.md.
  */
 
@@ -22,8 +22,8 @@ import { logger } from "zigbee-herdsman-converters/lib/logger";
 // this file from `<data>/external_converters/` and the extension from
 // `<data>/external_extensions/`. A repo-relative path would look right here and
 // never load in production.
-import { t } from "../external_extensions/lib/i18n/index.mjs";
-import { FIELDS } from "../external_extensions/lib/huelink-ui.mjs";
+import { t } from "../external_extensions/huelink-lib/i18n/index.mjs";
+import { FIELDS } from "../external_extensions/huelink-lib/huelink-ui.mjs";
 
 const NS = "zhc:huelink-exposes";
 const ZIGBEE_MODEL = "LCX002";
@@ -69,12 +69,11 @@ const toExpose = (field) => {
             .withDescription(field.description)
             // `category` does nothing in the z2m UI, but HA discovery reads it:
             // `config`/`diagnostic` makes the entity a setting or a diagnostic
-            // rather than a normal control.
+            // rather than a normal control (`undefined` = normal control).
             .withCategory(field.category)
             // Disabled in HA on purpose: the strip already has a full HueLink
-            // control set there (its own device). A second set next to the light
-            // would be two places to set the same thing differently. In the z2m
-            // UI they are always visible, which is the point of this file.
+            // control set there (its own device). Always visible in the z2m UI.
+            // Only affects newly discovered entities; delete old ones in HA once.
             .withHomeAssistant({ enabledByDefault: false })
     );
 };

@@ -7,19 +7,19 @@
 # "Prove that it does" is the whole point of the second half of this script.
 # zigbee2mqtt's `bridge/request/extension/save` re-imports ONLY the top-level
 # extension file: it copies that one file to a fresh temporary name so Node
-# treats it as a new module, while every `./lib/*.mjs` it imports keeps its
+# treats it as a new module, while every `./huelink-lib/*.mjs` it imports keeps its
 # stable path and therefore stays in the ESM module cache for the lifetime of
 # the process. So a hot reload picks up huelink.mjs and silently ignores every
-# change under lib/. `bridge/request/restart` does not help either: it restarts
+# change under huelink-lib/. `bridge/request/restart` does not help either: it restarts
 # zigbee2mqtt inside the same Node process, and the module cache survives it.
 #
-# The only thing that really reloads lib/ is a new Node process. Set
+# The only thing that really reloads huelink-lib/ is a new Node process. Set
 # Z2M_RESTART_CMD to whatever restarts your zigbee2mqtt (a `docker restart`, a
 # `systemctl restart`, an `ssh ... ` line) and this script will use it, then
 # refuse to report success until the LIVE extension reports both the version
 # being deployed and a process start time later than the moment the copy began.
 # Without that setting the script falls back to the hot reload and says plainly
-# that lib/ changes are not live.
+# that huelink-lib/ changes are not live.
 #
 # Settings come from the environment, then .env.deploy, then .env in the repo
 # root, in that order of precedence: the first of those that sets a key wins.
@@ -67,9 +67,9 @@ sensor.huelink_deployed_version and reads it back.
 
 How the new code is loaded depends on Z2M_RESTART_CMD:
   set    - that command is run, which is the only way changes under
-           extension/lib actually take effect.
+           extension/huelink-lib actually take effect.
   unset  - a hot reload over MQTT, which reloads huelink.mjs alone. The script
-           says so, loudly, instead of implying lib/ went live too.
+           says so, loudly, instead of implying huelink-lib/ went live too.
 
 Options:
   --dry-run       print what would be done and change nothing. Makes no
@@ -401,7 +401,7 @@ else
     require_command mosquitto_sub "Install the Mosquitto clients: brew install mosquitto (macOS) or apt install mosquitto-clients (Debian/Ubuntu)."
   fi
   [ -f "$REPO_DIR/extension/$EXTENSION_FILE" ] || fail "extension/$EXTENSION_FILE is missing from this checkout."
-  [ -d "$REPO_DIR/extension/lib" ] || fail "extension/lib is missing from this checkout."
+  [ -d "$REPO_DIR/extension/huelink-lib" ] || fail "extension/huelink-lib is missing from this checkout."
   [ -f "$REPO_DIR/converter/$CONVERTER_FILE" ] || fail "converter/$CONVERTER_FILE is missing from this checkout."
   # The converters directory is the sibling of the extensions one in every
   # stock layout, so guessing it beats making everybody set another key. It is
@@ -432,7 +432,7 @@ fi
 if [ -n "$MQTT_HOST" ]; then write_mqtt_conf; fi
 
 # none = nothing was asked to load; save = hot reload of huelink.mjs alone;
-# restart = a new Node process, the only kind that picks up lib/.
+# restart = a new Node process, the only kind that picks up huelink-lib/.
 RELOAD_MODE="none"
 # What the running extension says about itself, filled in by the verify step.
 # Empty means nobody asked it, and the verdict says so rather than guessing.
@@ -481,9 +481,9 @@ if [ "$VERSION_ONLY" -eq 0 ]; then
     [ -d "$Z2M_CONVERTERS_DIR" ] || fail "the external converters directory ($Z2M_CONVERTERS_DIR) does not exist. Set Z2M_CONVERTERS_DIR to the external_converters directory of your zigbee2mqtt installation."
     # Copied file by file rather than mirrored, because the same directory can
     # hold other people's extensions and deleting those would be rude.
-    mkdir -p "$Z2M_EXTENSIONS_DIR/lib"
+    mkdir -p "$Z2M_EXTENSIONS_DIR/huelink-lib"
     cp "$REPO_DIR/extension/$EXTENSION_FILE" "$Z2M_EXTENSIONS_DIR/$EXTENSION_FILE"
-    cp -R "$REPO_DIR/extension/lib/." "$Z2M_EXTENSIONS_DIR/lib/"
+    cp -R "$REPO_DIR/extension/huelink-lib/." "$Z2M_EXTENSIONS_DIR/huelink-lib/"
     # The converter is what gives the strip its extra fields on the device
     # page. It lives in a different directory and was easy to forget, which is
     # how a deploy could leave the extension and its exposes out of step.
@@ -491,6 +491,10 @@ if [ "$VERSION_ONLY" -eq 0 ]; then
     ok "$FILE_COUNT files + $CONVERTER_FILE"
     note "extension -> $Z2M_EXTENSIONS_DIR"
     note "converter -> $Z2M_CONVERTERS_DIR"
+    # Pre-1.3.0 name. Never deleted here (it may belong to another extension).
+    if [ -d "$Z2M_EXTENSIONS_DIR/lib" ]; then
+      note "old $Z2M_EXTENSIONS_DIR/lib is no longer used by HueLink; remove it if nothing else needs it"
+    fi
   fi
 
   step "load the new code"
@@ -505,7 +509,7 @@ if [ "$VERSION_ONLY" -eq 0 ]; then
   elif [ -n "$Z2M_RESTART_CMD" ]; then
     # Deliberately the whole process, not bridge/request/restart: that one
     # restarts zigbee2mqtt inside the same Node process and the ESM module
-    # cache, which is where lib/ lives, survives it untouched.
+    # cache, which is where huelink-lib/ lives, survives it untouched.
     if ! bash -c "$Z2M_RESTART_CMD" >"$WORK_DIR/restart.log" 2>&1; then
       fail "Z2M_RESTART_CMD failed: $(tr '\n' ' ' <"$WORK_DIR/restart.log" | head -c 300)"
     fi
@@ -513,7 +517,7 @@ if [ "$VERSION_ONLY" -eq 0 ]; then
     ok "restarted zigbee2mqtt"
   else
     # No way to restart, so this is the best available: zigbee2mqtt writes the
-    # file itself and re-imports that one file. lib/ keeps running the code the
+    # file itself and re-imports that one file. huelink-lib/ keeps running the code the
     # process started with, and the verdict at the bottom says so.
     jq -n --arg name "$EXTENSION_FILE" --rawfile code "$REPO_DIR/extension/$EXTENSION_FILE" \
       '{name: $name, code: $code}' >"$WORK_DIR/save.json"
@@ -583,8 +587,8 @@ if [ "$VERSION_ONLY" -eq 0 ]; then
       fail "zigbee2mqtt accepted the file but reports $PROJECT $LIVE_VERSION, not $VERSION. Something else is writing to $Z2M_EXTENSIONS_DIR, or the reload did not take."
     fi
     ok "zigbee2mqtt lists $EXTENSION_FILE, live version ${LIVE_VERSION:-unknown}"
-    note "hot reload: extension/lib is still the code this process started with"
-    note "set Z2M_RESTART_CMD in .env to deploy lib/ changes for real"
+    note "hot reload: extension/huelink-lib is still the code this process started with"
+    note "set Z2M_RESTART_CMD in .env to deploy huelink-lib/ changes for real"
   fi
 fi
 
@@ -631,7 +635,7 @@ elif [ "$RELOAD_MODE" = "restart" ]; then
   printf '%s %s is live: zigbee2mqtt restarted at %s and reports it. HA reports %s = %s\n' \
     "$PROJECT" "$VERSION" "$LIVE_STARTED" "$SENSOR" "$REPORTED"
 elif [ "$RELOAD_MODE" = "save" ]; then
-  printf '%s %s: %s was hot reloaded, but lib/ was NOT (no Z2M_RESTART_CMD), so zigbee2mqtt still runs the lib/ it started with. HA reports %s = %s\n' \
+  printf '%s %s: %s was hot reloaded, but huelink-lib/ was NOT (no Z2M_RESTART_CMD), so zigbee2mqtt still runs the huelink-lib/ it started with. HA reports %s = %s\n' \
     "$PROJECT" "$VERSION" "$EXTENSION_FILE" "$SENSOR" "$REPORTED"
 else
   printf '%s %s was copied but not loaded, so zigbee2mqtt still runs the old code until it restarts; HA reports %s = %s\n' "$PROJECT" "$VERSION" "$SENSOR" "$REPORTED"

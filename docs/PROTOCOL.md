@@ -2,7 +2,7 @@
 
 The Philips Hue Entertainment streaming format, as spoken over Zigbee directly to the strip. Reverse engineered; reference implementation: [github.com/chrivers/bifrost](https://github.com/chrivers/bifrost).
 
-Everything here is implemented by `extension/lib/huepack.mjs`, which is pure: colours in, bytes out. No I/O, no state.
+Everything here is implemented by `extension/huelink-lib/huepack.mjs`, which is pure: colours in, bytes out. No I/O, no state.
 
 ## Cluster and commands
 
@@ -103,7 +103,7 @@ Cluster `0xFC01`, attribute 5, type uint8 (`ZclDataType::ZclU8` = `0x20`), manuf
 
 ## Stream lifecycle
 
-The ordering observed from a real Bifrost, implemented in `lib/huestream.mjs`:
+The ordering observed from a real Bifrost, implemented in `huelink-lib/huestream.mjs`:
 
 ```
 cmd 3   RESET             [0, 1, <counter LE>]
@@ -155,7 +155,7 @@ The fix was to take Hyperion out of the test path and talk to Bifrost directly.
 ```
 bytediff.mjs --DTLS-PSK, Hue Entertainment v2--> bifrost-test --z2m WebSocket--> z2mfake
      |                                                                              |
-     +-- same RGB -> lib/huepack.mjs -> bytes ----------------- compared -----------+
+     +-- same RGB -> huelink-lib/huepack.mjs -> bytes ----------------- compared -----------+
 ```
 
 Both sides receive **exactly the same RGB**, so any difference in bytes can only come from the encoder.

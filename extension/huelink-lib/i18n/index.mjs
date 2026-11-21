@@ -4,7 +4,7 @@
  * `en.json` is the base and must contain every key; other locales are laid
  * over it, so a missing translation shows English rather than a blank or a key
  * name. A new language is a new file plus an entry in `LOCALES`
- * (`lib/config.mjs`), with no code change.
+ * (`huelink-lib/config.mjs`), with no code change.
  *
  * Keys are flat (`"status.off"`) so "where does this text come from" is one
  * grep. Parameters are `{name}`; an unsupplied one stays visible as `{name}`,

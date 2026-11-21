@@ -4,9 +4,9 @@
  * bridge and no Bifrost in between.
  *
  * This file is the edge: the z2m transport, the UDP listener and the MQTT
- * state. The byte encoding is in lib/huepack.mjs, the stream lifecycle in
- * lib/huestream.mjs, the power/mode decision in lib/arbiter.mjs, the effect
- * catalogue in lib/effects/.
+ * state. The byte encoding is in huelink-lib/huepack.mjs, the stream lifecycle in
+ * huelink-lib/huestream.mjs, the power/mode decision in huelink-lib/arbiter.mjs, the effect
+ * catalogue in huelink-lib/effects/.
  *
  * Control is two things only: power, and exactly one mode (light / effect /
  * sync). "Off" is a RESET out of the stream and then a normal off, never a
@@ -17,24 +17,34 @@
 import dgram from "node:dgram";
 import { statSync } from "node:fs";
 
-import { HueStream } from "./lib/huestream.mjs";
-import { Arbiter, FrameSource, MODE_EFFECT, MODE_LIGHT, MODE_OFF, MODE_SYNC, MODES } from "./lib/arbiter.mjs";
-import { CONFIG, CONFIG_ERRORS, CONFIG_FILE, CONFIG_PATH, CONFIG_WARNINGS, loadConfig } from "./lib/config.mjs";
-import { EffectEngine, loadEffects } from "./lib/effects/index.mjs";
-import { t } from "./lib/i18n/index.mjs";
-import { toFinite } from "./lib/num.mjs";
-import { Pacer, TUNABLE } from "./lib/pacer.mjs";
-import { MODE_BY_LABEL, MODE_LABEL, SETTABLE_KEYS } from "./lib/huelink-ui.mjs";
+import { HueStream } from "./huelink-lib/huestream.mjs";
+import { Arbiter, FrameSource, MODE_EFFECT, MODE_LIGHT, MODE_OFF, MODE_SYNC, MODES } from "./huelink-lib/arbiter.mjs";
+import { CONFIG, CONFIG_ERRORS, CONFIG_FILE, CONFIG_PATH, CONFIG_WARNINGS, loadConfig } from "./huelink-lib/config.mjs";
+import { EffectEngine, loadEffects } from "./huelink-lib/effects/index.mjs";
+import { SATURATION_PCT, clampSaturationPct, saturate } from "./huelink-lib/huepack.mjs";
+import { t } from "./huelink-lib/i18n/index.mjs";
+import { toFinite } from "./huelink-lib/num.mjs";
+import { LIMITS, Pacer, TUNABLE } from "./huelink-lib/pacer.mjs";
+import { KNOB_KEYS, landed, match } from "./huelink-lib/presets.mjs";
+import {
+    KNOBS,
+    MODE_BY_LABEL,
+    MODE_LABEL,
+    PRESETS,
+    PRESET_PROBLEMS,
+    SETTABLE_KEYS,
+    categoryOf,
+} from "./huelink-lib/huelink-ui.mjs";
 
 /**
  * One source, three consumers: the startup log line, the `huelink_version`
  * field on the z2m device page, and the retained `zigbee2mqtt/huelink` payload.
  *
  * It matters because `bridge/request/extension/save` reloads ONLY this file;
- * `lib/*.mjs` stays in Node's ESM cache until the container restarts. So "is my
+ * `huelink-lib/*.mjs` stays in Node's ESM cache until the container restarts. So "is my
  * change live" is a real question, and the only honest answer is a number the
  * loaded code prints itself. Bump it on every meaningful change here or under
- * `lib/`: a stale number is worse than none, it looks like an answer and lies.
+ * `huelink-lib/`: a stale number is worse than none, it looks like an answer and lies.
  *
  * It is a literal rather than a read of `package.json` because z2m imports this
  * file from a temporary copy in its own data directory, where no `package.json`
@@ -42,25 +52,34 @@ import { MODE_BY_LABEL, MODE_LABEL, SETTABLE_KEYS } from "./lib/huelink-ui.mjs";
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.2.0";
+export const VERSION = "1.3.0";
+
+/** Knobs with a slider: the file only sets their startup value (a live reload would fight the slider). */
+const SLIDER_OWNED = new Set(["occupancyBudget", ...KNOBS.map((k) => k.knob)]);
+
+/** File keys re-read while running. */
+const FILE_LIVE = TUNABLE.filter((key) => !SLIDER_OWNED.has(key));
+
+/** Preset knobs set through `setTunable`; fps and saturation have their own setters. */
+const PRESET_TUNABLES = KNOB_KEYS.filter((k) => !["fps", "saturationPct"].includes(k));
 
 /**
  * When this Node process started, ISO-8601.
  *
  * `scripts/deploy.sh` needs to tell "z2m re-read the extension file" from "z2m
- * started fresh", because only the second reloads `lib/*.mjs`. The version
- * number cannot answer that: a cached `lib/` reports the same version as a new
+ * started fresh", because only the second reloads `huelink-lib/*.mjs`. The version
+ * number cannot answer that: a cached `huelink-lib/` reports the same version as a new
  * one. Process uptime can, and nothing but a real restart can reset it.
  */
 const STARTED_AT = new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString();
 
 /*
- * Config comes from outside: fields, defaults and validation in lib/config.mjs,
+ * Config comes from outside: fields, defaults and validation in huelink-lib/config.mjs,
  * values in `huelink.config.json` next to `configuration.yaml`. The `fps`
  * default is `maxFps`, itself derived from measured coordinator air time, not
  * chosen. See docs/PACING.md.
  *
- * Mode labels (`MODE_LABEL` / `MODE_BY_LABEL`) come from lib/huelink-ui.mjs, so
+ * Mode labels (`MODE_LABEL` / `MODE_BY_LABEL`) come from huelink-lib/huelink-ui.mjs, so
  * the HA select, the z2m enum and the `status()` line cannot drift apart.
  */
 
@@ -91,22 +110,13 @@ const FAIL_LIMIT = 5;
 const FAIL_BACKOFF_MS = [200, 1000, 3000];
 
 /**
- * How long a tripped breaker stays shut no matter what the strip says.
- *
- * The breaker is closed by PROOF OF LIFE, not by a clock: zigbee2mqtt tells us
- * whenever it hears a Zigbee frame from the strip, so the strip itself says
- * when it is worth another try and no probe of our own has to go out to ask.
- * Without this floor, though, a strip that answers pings while refusing
- * entertainment frames would close the breaker the moment it tripped, and the
- * two would take turns for ever.
- *
- * Five minutes is the ceiling on that loop rather than a guess at a repair
- * time: a re-trip costs `FAIL_LIMIT` failed frames at ~6 s of coordinator time
- * each, so the very worst case this allows is about 30 s of occupancy in every
- * 5 min. The cost of being wrong the other way is the strip sitting dark while
- * the TV plays, which is what used to happen.
+ * How long a tripped breaker stays shut; then `tick` reopens it. A re-trip
+ * with no frame through doubles the wait up to `TRIP_DWELL_MAX_MS`; a frame
+ * resets it. No `lastSeenChanged` listener on purpose: a switched-off strip
+ * is silent (observed: tripped for 2 h).
  */
 const TRIP_DWELL_MS = 300_000;
+const TRIP_DWELL_MAX_MS = 3_600_000;
 
 /**
  * How long a command handler waits for a tick to let go of the radio before it
@@ -139,8 +149,8 @@ const UDP_REJECT_MAX_SENDERS = 8;
  *
  * Here rather than in `huelink.config.json` on purpose, even though
  * `BLACK_LEVEL` does depend on the capture hardware. z2m reloads an extension
- * by re-importing THIS file from a temp copy; `lib/` keeps its place in the
- * module cache and is not re-read. A knob added to lib/config.mjs therefore
+ * by re-importing THIS file from a temp copy; `huelink-lib/` keeps its place in the
+ * module cache and is not re-read. A knob added to huelink-lib/config.mjs therefore
  * does not exist until zigbee2mqtt is restarted, which takes the whole Zigbee
  * network down, while a constant here is retuned by one more extension save.
  *
@@ -256,6 +266,12 @@ export default class HueLink {
             maxPerWindow: CONFIG.dutyCap,
             ...Object.fromEntries(TUNABLE.map((key) => [key, CONFIG[key]])),
         });
+        /**
+         * Colour saturation, integer percent; 100 is neutral. Not a pacer knob:
+         * it changes colours inside a frame, not the frame count. The config
+         * validates 0.5-2, so the clamp only snaps to the slider step.
+         */
+        this.saturationPct = clampSaturationPct(CONFIG.saturation * 100);
         /** `mtimeMs` of the config file when it was last read, or 0 for none. */
         this.configStamp = 0;
         /** Output state already APPLIED to the strip (off/light/effect/sync). */
@@ -267,6 +283,8 @@ export default class HueLink {
         this.fpsReal = 0;
         /** Consecutive failed frames; one success resets it. */
         this.failures = 0;
+        /** Last verdict `reportCeiling` logged (null = none yet), so it logs on change only. */
+        this.ceilingReport = null;
         /** `tick()` stays quiet until this time (backoff pause). */
         this.retryAt = 0;
         /** Mode the breaker tripped in, or `null`. While set, nothing is sent. */
@@ -275,10 +293,13 @@ export default class HueLink {
          * When it tripped, and the mode KEY it tripped in. `tripped` itself
          * holds the translated label, which is the right thing to show a person
          * and the wrong thing to re-arm from. Both only mean anything while
-         * `tripped` is set. See `onProofOfLife`.
+         * `tripped` is set.
          */
         this.trippedAt = 0;
         this.trippedMode = null;
+        /** Current backoff and trips since the last frame got through; see `TRIP_DWELL_MS`. */
+        this.tripDwellMs = TRIP_DWELL_MS;
+        this.tripStreak = 0;
         /**
          * ARMED: the mode whose frames we are waiting for, or `null`. The strip
          * is off, but the choice still stands, so the first frame to arrive
@@ -380,6 +401,15 @@ export default class HueLink {
         // has to start from nothing.
         if (this.effects.effects.length) this.effects.select(this.effects.effects[0].name);
 
+        // Logged here: huelink-ui.mjs also loads in z2m's converter process, which has no logger of ours.
+        for (const problem of PRESET_PROBLEMS) this.logger.error(problem);
+        this.logger.info(
+            `[huelink] ${t("log.presetsLoaded", {
+                count: PRESETS.length,
+                names: PRESETS.map((p) => p.name).join(", "),
+            })}`,
+        );
+
         this.stream = new HueStream({
             transport: this.zclTransport(endpoint),
             networkAddress: device.zh.networkAddress,
@@ -462,10 +492,6 @@ export default class HueLink {
         // switch, a Zigbee binding or the z2m web UI changes the state
         // directly, and the published state is where everyone sees it.
         this.eventBus.onPublishEntityState(this, (data) => this.onEntityState(data));
-        // Third path, and a listener rather than a sender: zigbee2mqtt raises
-        // this on every Zigbee frame it receives, so it is how a strip that has
-        // tripped the breaker tells us it is back, at no cost on the air.
-        this.eventBus.onLastSeenChanged(this, (data) => void this.onProofOfLife(data?.device));
 
         // Settle window before the first decision: commands from the previous
         // life are still in flight (an extension reload calls `stop()` on the
@@ -508,36 +534,18 @@ export default class HueLink {
     }
 
     /**
-     * Re-read `huelink.config.json` and apply the pacer numbers from it.
-     *
-     * This exists because tuning is an experiment, and an experiment whose
-     * every step costs a zigbee2mqtt restart is one nobody finishes. Save the
-     * file, wait two seconds, watch the strip.
-     *
-     * ONLY `TUNABLE` is applied. That restriction is the whole safety
-     * argument: those are plain numbers, each with a clamp, each read fresh on
-     * the next frame, so swapping one mid-stream cannot leave anything half
-     * changed. `segments` would resize a buffer the stream is writing into,
-     * `udpPort` would need the socket rebound, `maxFps` would need the z2m
-     * device definition rebuilt. Those are named in the log instead, which is
-     * the honest version of applying them badly.
-     *
-     * The file is also the LOWER authority while running: `fps`, the delta
-     * threshold and the duty cap belong to whoever last touched Home
-     * Assistant, so the file sets them once at startup and is ignored here.
-     * `occupancyBudget` is the exception in the other direction, because it
-     * has no entity, only an MQTT command, and between a file a person edits
-     * and a value sent by hand once, the file is the better owner.
+     * Re-read `huelink.config.json` and apply `FILE_LIVE`. Everything else
+     * (slider knobs, `saturation`, `maxFps`, ...) is startup-only and named in
+     * the log if the file changed.
      */
     reloadConfig() {
         const stamp = configMtime();
         if (stamp === this.configStamp) return;
         this.configStamp = stamp;
-        // The file went away. Nothing to apply, and clearing the values back
-        // to defaults would be a surprising reading of `rm`.
+        // File removed: keep what runs rather than reset to defaults.
         if (!stamp) return;
 
-        const { config, errors, warnings } = loadConfig();
+        const { config, errors, warnings, invalid } = loadConfig();
         // A typo in a live edit is the most likely kind there is: this is the
         // path where someone is typing into a running system.
         for (const problem of errors) {
@@ -547,7 +555,9 @@ export default class HueLink {
             this.logger.warning(`[huelink] ${t("log.configWarning", { warning })}`);
         }
 
-        const changed = this.pacer.tune(config);
+        // A key the file could not supply keeps its running value, not the default.
+        const live = Object.fromEntries(FILE_LIVE.filter((key) => !invalid.includes(key)).map((key) => [key, config[key]]));
+        const changed = this.pacer.tune(live);
         this.logger.info(
             `[huelink] ${
                 changed.length
@@ -557,12 +567,9 @@ export default class HueLink {
                     : t("log.configSame")
             }`,
         );
-        // Everything else that moved, named rather than silently ignored.
-        // `CONFIG` is the snapshot this process started from, so this compares
-        // the file against what is actually running. Stringified because
-        // `udpAllowFrom` is an array and a fresh one is never `===` the old.
+        // Anything else that moved is named, not silently ignored. Stringified: `udpAllowFrom` is an array.
         const restart = Object.keys(CONFIG).filter(
-            (key) => !TUNABLE.includes(key) && JSON.stringify(config[key]) !== JSON.stringify(CONFIG[key]),
+            (key) => !FILE_LIVE.includes(key) && JSON.stringify(config[key]) !== JSON.stringify(CONFIG[key]),
         );
         if (restart.length) {
             this.logger.warning(`[huelink] ${t("log.configRestartNeeded", { fields: restart.join(", ") })}`);
@@ -675,7 +682,13 @@ export default class HueLink {
         // Tripped breaker or backoff pause: the air stays free for the rest of
         // the house. Both checks come first so neither a frame nor a mode
         // change command leaves in those states.
-        if (this.tripped || Date.now() < this.retryAt) return;
+        // The dwell is checked on this tick rather than by a timer, which
+        // would have to be cancelled in `resume`, `stop` and every reopen.
+        if (this.tripped) {
+            if (Date.now() - this.trippedAt >= this.tripDwellMs) await this.reopen();
+            return;
+        }
+        if (Date.now() < this.retryAt) return;
         if (this.sending) return; // do not overlap when Zigbee answers slowly
         this.sending = true;
         try {
@@ -757,14 +770,19 @@ export default class HueLink {
             }
 
             if (colors) {
+                // Saturate before the pacer decides, so delta suppression
+                // compares the colours that will actually be sent. At 100 %
+                // `saturate` returns the same array untouched.
+                // Allocates a new array unless neutral; negligible at <= 25 fps.
+                const shown = saturate(colors, this.saturationPct / 100);
                 // Three levers in one call: pace, duty cap and delta
                 // suppression. `null` means "do not send this frame" and is not
                 // an error, so `failures` is left alone. See docs/PACING.md.
-                const decision = this.pacer.decide(colors);
+                const decision = this.pacer.decide(shown);
                 if (decision) {
                     this.stream.setSmoothingMs(decision.smoothingMs);
                     const t0 = Date.now();
-                    await this.stream.frame(colors);
+                    await this.stream.frame(shown);
                     // Send duration IS coordinator occupancy, which is what the
                     // budget measures, so it self-corrects as the coordinator
                     // slows. `decision.fast` is passed on because a scene cut
@@ -778,8 +796,12 @@ export default class HueLink {
                     );
                     this.sent++;
                     // It went through: the strip answers, so earlier failures
-                    // were transient and the counter starts from zero.
+                    // were transient and the counter starts from zero. The
+                    // dwell ladder resets here only: an accepted frame is the
+                    // proof that the last reopen was worth it.
                     this.failures = 0;
+                    this.tripStreak = 0;
+                    this.tripDwellMs = TRIP_DWELL_MS;
                 }
             } else {
                 this.failures = 0;
@@ -799,8 +821,7 @@ export default class HueLink {
      * asked for sync and it ended; and `armed` is not set, because a failure is
      * not an idle source, and an armed mode would light the strip again on the
      * very next frame, which is the loop this exists to end. What the mode WAS
-     * is remembered instead, for `onProofOfLife` to arm from once the strip has
-     * shown it is back. See docs/DESIGN.md.
+     * is remembered instead, for `reopen` to arm from. See docs/DESIGN.md.
      */
     async onFailure(error) {
         this.failures++;
@@ -815,6 +836,10 @@ export default class HueLink {
         this.tripped = label;
         this.trippedAt = Date.now();
         this.trippedMode = mode;
+        // Tripped again with nothing sent since the last reopen: double the
+        // wait. Cleared by a sent frame (`tick`) or a person (`resume`).
+        this.tripStreak++;
+        this.tripDwellMs = Math.min(TRIP_DWELL_MS * 2 ** (this.tripStreak - 1), TRIP_DWELL_MAX_MS);
         this.failures = 0;
         this.retryAt = 0;
         this.armed = null;
@@ -850,13 +875,12 @@ export default class HueLink {
     }
 
     /**
-     * Closes a tripped breaker. Called from an explicit command (power or
-     * mode), which is the one moment someone demonstrably wants sending to
-     * resume, and from `onProofOfLife`. NOT from a timer: a clock knows nothing
-     * about the strip, so it would start hammering an unreachable one by
-     * itself, which is the behaviour the breaker exists to stop.
+     * Closes a tripped breaker, from an explicit command or from `reopen`.
+     *
+     * @param {boolean} [demanded]  a person asked: only then is the backoff
+     *   reset. A timer retry must keep climbing the ladder.
      */
-    resume() {
+    resume(demanded = false) {
         if (!this.tripped) return;
         this.logger.info(`[huelink] ${t("log.retrying", { mode: this.tripped })}`);
         this.tripped = null;
@@ -864,37 +888,24 @@ export default class HueLink {
         this.trippedMode = null;
         this.failures = 0;
         this.retryAt = 0;
+        if (demanded) {
+            this.tripStreak = 0;
+            this.tripDwellMs = TRIP_DWELL_MS;
+        }
     }
 
     /**
-     * zigbee2mqtt heard something from the strip. If the breaker is tripped,
-     * this is the evidence that reopening it is worth the air.
+     * Reopen after the dwell (called from `tick`) and re-ARM, not relight. Only
+     * sync/effect have a source to wait for; arming light mode would make a
+     * dead strip switch itself on.
      *
-     * A trip used to be a dead end: it clears `armed`, so no frame could ever
-     * light the strip again and only a person sending a command could undo it.
-     * That is correct the instant it happens, and wrong an hour later, when the
-     * strip is fine and the only thing still broken is that nobody told us.
-     *
-     * The strip itself is the one thing that knows when it is back, and
-     * zigbee2mqtt already raises `lastSeenChanged` on every Zigbee frame it
-     * receives, so reading that costs NOTHING on the air: no ping of ours, no
-     * probe, nothing sent to a device that may not be there. A clock-driven
-     * retry would be the opposite, which is why it is not one.
-     *
-     * Hearing from the strip is not a promise that entertainment frames will
-     * work, only that it is reachable, so the first thing re-arming does is
-     * offer it one more chance to fail. `TRIP_DWELL_MS` is the floor that keeps
-     * that from becoming a loop. Re-arming rather than relighting also means a
-     * strip that comes back while the TV is off just waits, exactly as it would
-     * have after any other quiet source.
+     * Re-entrancy is decided before the first `await` because `tick` calls
+     * this every few ms.
      */
-    async onProofOfLife(device) {
+    async reopen() {
         if (!this.tripped) return;
-        if (device?.name !== CONFIG.device) return;
-        if (Date.now() - this.trippedAt < TRIP_DWELL_MS) return;
-        // Only a mode with a source of its own can be armed: there is nothing
-        // to wait for in light mode, and arming it would turn a dead breaker
-        // into a strip that switches itself on.
+        // `resume()` clears `tripped` synchronously, so the repeated calls from
+        // `tick` cannot overlap despite the `await` below.
         const mode = this.trippedMode === MODE_SYNC || this.trippedMode === MODE_EFFECT ? this.trippedMode : null;
         this.resume();
         this.armed = mode;
@@ -1100,7 +1111,7 @@ export default class HueLink {
             await this.publishState();
             return;
         }
-        this.resume();
+        this.resume(true);
         // A direct action cancels arming: what was just pressed outranks what
         // the strip was waiting for. Without this, "on as a light" would jump
         // back to sync a moment later when the TV resumed.
@@ -1127,7 +1138,7 @@ export default class HueLink {
      * dead end this model exists to remove.
      */
     async setMode(value) {
-        // `MODE_BY_LABEL` is a Map on purpose; see lib/huelink-ui.mjs. With a
+        // `MODE_BY_LABEL` is a Map on purpose; see huelink-lib/huelink-ui.mjs. With a
         // plain object `{"mode":"constructor"}` would pass the `!mode` check
         // below and light the strip on a name nobody defined.
         const mode = MODE_BY_LABEL.get(value) ?? (MODES.includes(value) ? value : null);
@@ -1150,7 +1161,7 @@ export default class HueLink {
         // clear BOTH sources including the one we are switching to. Everything
         // else `setPower` does follows in the lines below anyway.
         this.arbiter.power = true;
-        this.resume();
+        this.resume(true);
         this.armed = null; // see `setPower`: a choice outranks waiting
         this.arbiter.request(mode);
         // The previous mode's frames must not survive the switch even by one
@@ -1167,6 +1178,53 @@ export default class HueLink {
         this.pacer.reset();
         await this.settle();
         await this.publishState();
+    }
+
+    /** The knobs a preset owns, read live so every route that moves one is reflected. */
+    knobValues() {
+        return { ...Object.fromEntries(PRESET_TUNABLES.concat("fps").map((key) => [key, this.pacer[key]])), saturationPct: this.saturationPct };
+    }
+
+    /** Name of the preset matching the live knobs, or `null` (no selection). */
+    currentPreset() {
+        return match(PRESETS, this.knobValues(), this.pacer.maxFps)?.name ?? null;
+    }
+
+    /** Apply a preset by name or id; sliders keep working afterwards. */
+    applyPreset(value) {
+        const wanted = String(value);
+        const preset = PRESETS.find((p) => p.id === wanted || p.name === wanted);
+        if (!preset) {
+            this.logger.error(`[huelink] ${t("log.unknownPreset", { value: wanted.slice(0, 40).replace(/[\x00-\x1f\x7f]/g, "?") })}`);
+            return;
+        }
+
+        // Some presets raise the budget past the HA "expert" gate: choosing one is the consent.
+        const maxFps = this.pacer.maxFps;
+        const got = landed(preset, maxFps);
+        this.pacer.setFps(got.fps);
+        for (const key of PRESET_TUNABLES) this.pacer.setTunable(key, got[key]);
+        this.saturationPct = got.saturationPct;
+
+        this.logger.info(
+            `[huelink] ${t("log.presetApplied", {
+                name: preset.name,
+                knobs: KNOB_KEYS.map((key) => `${key}=${got[key]}`).join(", "),
+            })}`,
+        );
+        if (got.fps < preset.knobs.fps) {
+            this.logger.warning(
+                `[huelink] ${t("log.presetFpsTrimmed", { name: preset.name, asked: preset.knobs.fps, max: maxFps })}`,
+            );
+        }
+    }
+
+    /** Saturation in percent, snapped to the slider step so it can equal a preset. Returns whether the value was usable. */
+    setSaturationPct(value) {
+        const pct = clampSaturationPct(value);
+        if (pct === null) return false;
+        this.saturationPct = pct;
+        return true;
     }
 
     /**
@@ -1286,6 +1344,8 @@ export default class HueLink {
             await this.setPower(value === "TOGGLE" ? !this.arbiter.power : value === "ON");
         }
         if ("mode" in body) await this.setMode(body.mode);
+        // Before the individual knobs: preset first, explicit values win.
+        if ("preset" in body) this.applyPreset(body.preset);
         if ("effect" in body) {
             // Selecting an effect does NOT change the mode: it answers "which
             // effect", not "is an effect running". An unknown name is refused
@@ -1305,28 +1365,46 @@ export default class HueLink {
         // Every setter below REFUSES a value it cannot read, and a refusal is
         // said out loud. Silence would be the worst of both: the knob appears
         // to have been set, the published state disagrees with it, and nothing
-        // anywhere says why. See lib/num.mjs for what counts as a number.
+        // anywhere says why. See huelink-lib/num.mjs for what counts as a number.
         if ("effect_brightness" in body) {
             this.#refused("effect_brightness", body.effect_brightness, this.effects.setBrightness(body.effect_brightness));
         }
         if ("effect_speed" in body) {
             this.#refused("effect_speed", body.effect_speed, this.effects.setSpeed(body.effect_speed));
         }
-        // `fps` is adjustable from HA on purpose: only a person in front of the
-        // TV can judge how smooth sync LOOKS, and what it COSTS is published
-        // right next to it (`pacer.occupancyPct`). That trade is theirs.
-        if ("fps" in body) this.#refused("fps", body.fps, this.pacer.setFps(body.fps));
-        if ("occupancy_budget" in body) {
-            // Percent on the wire, fraction inside. Parsed before the division
-            // so `null` does not quietly become 0 %.
-            const pct = toFinite(body.occupancy_budget);
-            this.#refused(
-                "occupancy_budget",
-                body.occupancy_budget,
-                pct !== null && this.pacer.setOccupancyBudget(pct / 100),
-            );
-        }
+        // `delta` and `duty` stay off `/command` (z2m page only), as before.
+        this.#applyKnobs(body, (name) => (name === "delta" || name === "duty" ? null : name === "budget" ? "occupancy_budget" : name));
         await this.publishState();
+    }
+
+    /**
+     * Apply every knob present in `body`. `keyOf` maps a knob name to its key in
+     * this payload (`null` = not accepted here). Setters clamp and refuse
+     * non-numbers; a refusal is logged. Returns whether any key was present.
+     */
+    #applyKnobs(body, keyOf) {
+        const p = this.pacer;
+        // Budget is a percent on the wire, a fraction inside; parsed first so `null` is not 0 %.
+        const budget = (v) => {
+            const pct = toFinite(v);
+            return pct !== null && p.setOccupancyBudget(pct / 100);
+        };
+        const knobs = [
+            ["fps", (v) => p.setFps(v)],
+            ["delta", (v) => p.setDeltaScale(v)],
+            ["duty", (v) => p.setDutyCap(v)],
+            ["budget", budget],
+            ...KNOBS.map(({ knob, command }) => [command, (v) => p.setTunable(knob, v)]),
+            ["saturation", (v) => this.setSaturationPct(v)],
+        ];
+        let touched = false;
+        for (const [name, set] of knobs) {
+            const key = keyOf(name);
+            if (key === null || !(key in body)) continue;
+            this.#refused(key, body[key], set(body[key]));
+            touched = true;
+        }
+        return touched;
     }
 
     /** Say so when a setter turned a value down. No-op when it took it. */
@@ -1378,18 +1456,12 @@ export default class HueLink {
             await this.setMode(body.huelink_mode);
             touched = true;
         }
-        if ("huelink_fps" in body) {
-            this.#refused("huelink_fps", body.huelink_fps, this.pacer.setFps(body.huelink_fps));
+        // Before the sliders below: preset first, explicit values win.
+        if ("huelink_preset" in body) {
+            this.applyPreset(body.huelink_preset);
             touched = true;
         }
-        if ("huelink_delta" in body) {
-            this.#refused("huelink_delta", body.huelink_delta, this.pacer.setDeltaScale(body.huelink_delta));
-            touched = true;
-        }
-        if ("huelink_duty" in body) {
-            this.#refused("huelink_duty", body.huelink_duty, this.pacer.setDutyCap(body.huelink_duty));
-            touched = true;
-        }
+        if (this.#applyKnobs(body, (name) => `huelink_${name}`)) touched = true;
         if (touched) await this.publishState();
 
         const value = String(body.state ?? "").toUpperCase();
@@ -1482,6 +1554,23 @@ export default class HueLink {
     }
 
     /**
+     * Logs once per change when the frame cap asks for more than the duty cap
+     * and the air budget can pay for. Keyed on verdict and asked rate, not the
+     * budget figure, which drifts with every send. A warning: nothing is broken.
+     */
+    reportCeiling() {
+        const c = this.pacer.ceiling();
+        const capped = c.effective < c.asked;
+        const verdict = `${capped ? "capped" : "ok"}:${c.asked}:${c.effective}`;
+        if (verdict === this.ceilingReport) return;
+        const first = this.ceilingReport === null;
+        this.ceilingReport = verdict;
+        if (capped) this.logger.warning(`[huelink] ${t("log.fpsCapped", c)}`);
+        // No all-clear unless a warning came first.
+        else if (!first) this.logger.info(`[huelink] ${t("log.fpsUncapped", c)}`);
+    }
+
+    /**
      * The same numbers, but on the z2m device page itself (`huelink_*` fields
      * declared by `external_converters/huelink-exposes.mjs`).
      *
@@ -1509,6 +1598,15 @@ export default class HueLink {
             huelink_dropped: stats.skippedDelta + stats.skippedDuty,
             huelink_delta: stats.deltaScalePct,
             huelink_duty: stats.dutyCap,
+            // From `stats()`, so sliders show what the engine uses (the file can move them too).
+            huelink_budget: stats.occupancyBudgetPct,
+            huelink_smoothing: stats.smoothingFactor,
+            huelink_cut_threshold: stats.bigChangeThreshold,
+            huelink_cut_ms: stats.fastSmoothingMs,
+            huelink_cut_per_sec: stats.maxFastPerSec,
+            // Derived from the knobs above, not stored.
+            huelink_preset: this.currentPreset(),
+            huelink_saturation: this.saturationPct,
         };
         try {
             await this.publishEntityState(this.device, payload);
@@ -1536,6 +1634,8 @@ export default class HueLink {
         // views could describe two different moments, which is exactly what
         // publishing them together is meant to prevent.
         const stats = this.pacer.stats();
+        // Single convergence point for slider, MQTT command and config reload.
+        this.reportCeiling();
         try {
             await this.#publishRetained(stats);
         } catch (e) {
@@ -1557,7 +1657,7 @@ export default class HueLink {
                 /**
                  * When the Node process behind this code started. `version`
                  * cannot tell a re-read extension file from a fresh process,
-                 * and only a fresh process reloads `lib/*.mjs`; this can, so
+                 * and only a fresh process reloads `huelink-lib/*.mjs`; this can, so
                  * `scripts/deploy.sh` can prove what it deployed is running.
                  */
                 started: STARTED_AT,
@@ -1592,6 +1692,10 @@ export default class HueLink {
                 effect_speed: Math.round(this.effects.speed * 100),
                 fps: this.pacer.fps,
                 fps_real: this.fpsReal,
+                // Localised name: the HA select's state must equal one of its options.
+                preset: this.currentPreset(),
+                // Percent, unlike the budget's fraction in `pacer`.
+                saturation: this.saturationPct,
                 // Pacer stats. Without them nobody can tell WHETHER
                 // suppression is working: a drop in `fps_real` looks the same
                 // whether frames are skipped on purpose or are failing.
@@ -1620,6 +1724,9 @@ export default class HueLink {
             name: "HueLink",
             manufacturer: "gatisr/huelink",
             model: "Hue entertainment sender",
+            // z2m device identifier is the literal `zigbee2mqtt_<ID>` (no base
+            // topic). Read from the device so it survives a re-pair.
+            ...(this.device ? { via_device: `zigbee2mqtt_${this.device.options.ID}` } : {}),
         };
         const stateTopic = `${base}/${CONFIG.name}`;
         // `/command`, NOT `/set`. z2m's own publish extension routes everything
@@ -1631,7 +1738,30 @@ export default class HueLink {
         // reaches us, because the core subscribes to `<base>/#` and hands every
         // message to the event bus. See docs/DESIGN.md.
         const commandTopic = `${base}/${CONFIG.name}/command`;
-        const entities = [
+        /** A `number` slider entity: `[kind, id, payload]` like the literals below. */
+        const slider = (id, haKey, { value, command, limits, unit, icon, expert }) => [
+            "number",
+            id,
+            {
+                name: t(`ha.${haKey}`),
+                unique_id: `huelink_${CONFIG.name}_${id}`,
+                state_topic: stateTopic,
+                value_template: `{{ value_json.${value} }}`,
+                command_topic: commandTopic,
+                command_template: command,
+                min: limits.min,
+                max: limits.max,
+                step: limits.step,
+                ...(unit ? { unit_of_measurement: unit } : {}),
+                mode: "slider",
+                icon,
+                // Expert knobs (presets cover everyday use): off until enabled in HA.
+                ...(expert ? { enabled_by_default: false } : {}),
+                device,
+            },
+        ];
+
+        let entities = [
             [
                 "select",
                 "mode",
@@ -1644,6 +1774,25 @@ export default class HueLink {
                     command_template: '{"mode": {{ value | tojson }}}',
                     options: MODES.map((m) => MODE_LABEL[m]),
                     icon: "mdi:tune-variant",
+                    device,
+                },
+            ],
+            [
+                // Beside the mode select. Moving any slider turns the state
+                // into "Custom", which must be an option because HA logs an
+                // error for a select state outside its options; choosing it
+                // does nothing.
+                "select",
+                "preset",
+                {
+                    name: t("ha.preset"),
+                    unique_id: `huelink_${CONFIG.name}_preset`,
+                    state_topic: stateTopic,
+                    value_template: "{{ value_json.preset }}",
+                    command_topic: commandTopic,
+                    command_template: '{"preset": {{ value | tojson }}}',
+                    options: PRESETS.map((p) => p.name),
+                    icon: "mdi:playlist-star",
                     device,
                 },
             ],
@@ -1753,7 +1902,7 @@ export default class HueLink {
                     // installation can actually deliver, and on a dedicated
                     // coordinator that is a different number. Read once, so a
                     // change to it needs a z2m restart like the z2m-side
-                    // slider in lib/huelink-ui.mjs.
+                    // slider in huelink-lib/huelink-ui.mjs.
                     min: Math.min(2, CONFIG.maxFps),
                     max: CONFIG.maxFps,
                     step: 1,
@@ -1779,12 +1928,61 @@ export default class HueLink {
                     device,
                 },
             ],
+            // The budget is what really limits fps; raising the cap alone
+            // changes nothing. The `fps_ceiling` sensor shows the net result.
+            slider("budget", "budget", {
+                value: "pacer.occupancyBudgetPct",
+                command: '{"occupancy_budget": {{ value | int }}}',
+                limits: LIMITS.occupancyBudgetPct,
+                unit: "%",
+                icon: "mdi:gauge",
+                // Takes coordinator time from every other Zigbee device; presets cover everyday use.
+                expert: true,
+            }),
+            [
+                "sensor",
+                "fps_ceiling",
+                {
+                    // Deliverable rate: frame cap, quota and air budget combined.
+                    name: t("ha.fpsCeiling"),
+                    unique_id: `huelink_${CONFIG.name}_fps_ceiling`,
+                    state_topic: stateTopic,
+                    value_template: "{{ value_json.pacer.fpsCeiling }}",
+                    unit_of_measurement: "fps",
+                    icon: "mdi:arrow-collapse-up",
+                    device,
+                },
+            ],
+            // Built from `KNOBS`, the table that also wires the commands.
+            ...KNOBS.map(({ knob, command, i18n, unit, icon }) =>
+                slider(command, i18n, {
+                    value: `pacer.${knob}`,
+                    // `float`: `smoothingFactor` steps in 0.05, `int` would round it away.
+                    command: `{"${command}": {{ value | float }}}`,
+                    limits: LIMITS[knob],
+                    unit,
+                    icon,
+                    expert: true,
+                }),
+            ),
+            // Costs the coordinator nothing (changes colours, not frame count); 100 is neutral.
+            slider("saturation", "saturation", {
+                value: "saturation",
+                command: '{"saturation": {{ value | int }}}',
+                limits: SATURATION_PCT,
+                unit: "%",
+                icon: "mdi:palette",
+            }),
         ];
 
         // With no effects loaded, a `select` with an empty option list is just
         // an error in the HA log, so the entity is simply not published.
         if (!this.effectOptions.length) {
-            entities.splice(entities.findIndex(([kind, id]) => kind === "select" && id === "effect"), 1);
+            entities = entities.filter(([kind, id]) => !(kind === "select" && id === "effect"));
+        }
+        // Same for presets: an unreadable `presets.json` leaves only "Custom".
+        if (!PRESETS.length) {
+            entities = entities.filter(([kind, id]) => !(kind === "select" && id === "preset"));
         }
 
         for (const [kind, id] of RETIRED) {
@@ -1795,9 +1993,14 @@ export default class HueLink {
         }
 
         for (const [kind, id, cfg] of entities) {
+            // Entity category folds the entity under Configuration/Diagnostic
+            // in HA; same table as the z2m device page. `status` has none on
+            // purpose: it is where the breaker state shows. `categoryOf`
+            // throws on unknown ids, so new entities must be categorised.
+            const category = categoryOf(id);
             await this.mqtt.publish(
                 `${kind}/huelink_${CONFIG.name}/${id}/config`,
-                JSON.stringify(cfg),
+                JSON.stringify(category ? { ...cfg, entity_category: category } : cfg),
                 { baseTopic: prefix, clientOptions: { retain: true } },
             );
         }

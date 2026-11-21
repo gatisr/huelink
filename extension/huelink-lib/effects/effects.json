@@ -3,7 +3,6 @@
   "effects": [
     {
       "id": "christmas",
-      "name": { "en": "Holiday: Christmas", "lv": "Svētki: Ziemassvētki" },
       "kind": "wave",
       "params": {
         "palette": "christmas",
@@ -16,7 +15,6 @@
     },
     {
       "id": "newyear",
-      "name": { "en": "Holiday: New Year's Eve", "lv": "Svētki: Vecgada vakars" },
       "kind": "burst",
       "params": {
         "rateHz": 1.9,
@@ -31,7 +29,6 @@
     },
     {
       "id": "valentines",
-      "name": { "en": "Holiday: Valentine's Day", "lv": "Svētki: Valentīndiena" },
       "kind": "pulse",
       "params": {
         "palette": "valentines",
@@ -48,7 +45,6 @@
     },
     {
       "id": "easter",
-      "name": { "en": "Holiday: Easter", "lv": "Svētki: Lieldienas" },
       "kind": "wave",
       "params": {
         "palette": "easter",
@@ -62,7 +58,6 @@
     },
     {
       "id": "ligo",
-      "name": { "en": "Holiday: Midsummer", "lv": "Svētki: Jāņi" },
       "kind": "flame",
       "params": {
         "palette": "midsummer",
@@ -76,7 +71,6 @@
     },
     {
       "id": "lacplesis",
-      "name": { "en": "Holiday: Remembrance Day", "lv": "Svētki: Lāčplēša diena" },
       "kind": "flame",
       "params": {
         "palette": "autumn",
@@ -91,7 +85,6 @@
     },
     {
       "id": "independence",
-      "name": { "en": "Holiday: Independence Day", "lv": "Svētki: Valsts svētki" },
       "kind": "solid",
       "params": {
         "palette": "flag",
@@ -106,7 +99,6 @@
     },
     {
       "id": "halloween",
-      "name": { "en": "Holiday: Halloween", "lv": "Svētki: Helovīns" },
       "kind": "flame",
       "params": {
         "palette": "halloween",
@@ -121,7 +113,6 @@
 
     {
       "id": "romance",
-      "name": { "en": "Mood: Romance", "lv": "Noskaņa: Romantika" },
       "kind": "breathe",
       "params": {
         "palette": "romance",
@@ -134,7 +125,6 @@
     },
     {
       "id": "fairies",
-      "name": { "en": "Mood: Fairy Lights", "lv": "Noskaņa: Fejas" },
       "kind": "twinkle",
       "params": {
         "palette": "fairies",
@@ -147,7 +137,6 @@
     },
     {
       "id": "cinema",
-      "name": { "en": "Mood: Cinema", "lv": "Noskaņa: Kino" },
       "kind": "solid",
       "params": {
         "palette": "cinema",
@@ -158,7 +147,6 @@
     },
     {
       "id": "reading",
-      "name": { "en": "Mood: Reading", "lv": "Noskaņa: Lasīšana" },
       "kind": "solid",
       "params": {
         "palette": "warm_white",
@@ -169,7 +157,6 @@
     },
     {
       "id": "calm",
-      "name": { "en": "Mood: Calm", "lv": "Noskaņa: Miers" },
       "kind": "breathe",
       "params": {
         "palette": "calm_blue",
@@ -183,7 +170,6 @@
     },
     {
       "id": "sunset",
-      "name": { "en": "Mood: Sunset", "lv": "Noskaņa: Saulriets" },
       "kind": "wave",
       "params": {
         "palette": "sunset",
@@ -197,7 +183,6 @@
     },
     {
       "id": "aurora",
-      "name": { "en": "Mood: Aurora", "lv": "Noskaņa: Ziemeļblāzma" },
       "kind": "wave",
       "params": {
         "palette": "aurora",
@@ -211,7 +196,6 @@
     },
     {
       "id": "bonfire",
-      "name": { "en": "Mood: Bonfire", "lv": "Noskaņa: Ugunskurs" },
       "kind": "flame",
       "params": {
         "palette": "flame",
@@ -225,7 +209,6 @@
     },
     {
       "id": "candle",
-      "name": { "en": "Mood: Candle", "lv": "Noskaņa: Svece" },
       "kind": "flame",
       "params": {
         "palette": "candle",
@@ -240,7 +223,6 @@
     },
     {
       "id": "ocean",
-      "name": { "en": "Mood: Ocean", "lv": "Noskaņa: Okeāns" },
       "kind": "wave",
       "params": {
         "palette": "ocean",
@@ -254,7 +236,6 @@
     },
     {
       "id": "sunrise",
-      "name": { "en": "Mood: Sunrise", "lv": "Noskaņa: Rītausma" },
       "kind": "ramp",
       "params": {
         "palette": "sunrise",
@@ -269,7 +250,6 @@
     },
     {
       "id": "wakeup",
-      "name": { "en": "Mood: Sunrise Alarm", "lv": "Noskaņa: Saullēkts" },
       "kind": "ramp",
       "params": {
         "palette": "wakeup",
@@ -288,7 +268,6 @@
     },
     {
       "id": "sleep",
-      "name": { "en": "Mood: Falling Asleep", "lv": "Noskaņa: Iemigšana" },
       "kind": "ramp",
       "params": {
         "palette": ["#ffb45e", "#ff6a1e", "#5a0f00"],
@@ -308,7 +287,6 @@
 
     {
       "id": "boxing",
-      "name": { "en": "Party: Fight Night", "lv": "Ballīte: Boksa vakars" },
       "kind": "strobe",
       "params": {
         "palette": "boxing",
@@ -323,7 +301,6 @@
     },
     {
       "id": "disco",
-      "name": { "en": "Party: Disco", "lv": "Ballīte: Disko" },
       "kind": "chase",
       "params": {
         "palette": "disco",
@@ -339,7 +316,6 @@
     },
     {
       "id": "hockey",
-      "name": { "en": "Party: Hockey", "lv": "Ballīte: Hokejs" },
       "kind": "chase",
       "params": {
         "palette": "hockey",
@@ -355,7 +331,6 @@
     },
     {
       "id": "goal",
-      "name": { "en": "Party: Goal!", "lv": "Ballīte: Vārti!" },
       "kind": "strobe",
       "params": {
         "palette": "hockey",
@@ -370,7 +345,6 @@
     },
     {
       "id": "birthday",
-      "name": { "en": "Party: Birthday", "lv": "Ballīte: Dzimšanas diena" },
       "kind": "twinkle",
       "params": {
         "palette": "birthday",

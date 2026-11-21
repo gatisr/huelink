@@ -37,12 +37,12 @@ const SCRIPT = readFileSync(join(REPO, "scripts/deploy.sh"), "utf8");
 function fakeRepo({ env = {}, deploy = {} } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "huelink-deploy-"));
     mkdirSync(join(dir, "scripts"));
-    mkdirSync(join(dir, "extension/lib"), { recursive: true });
+    mkdirSync(join(dir, "extension/huelink-lib"), { recursive: true });
     mkdirSync(join(dir, "converter"));
     writeFileSync(join(dir, "scripts/deploy.sh"), SCRIPT);
     writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "9.9.9" }));
     writeFileSync(join(dir, "extension/huelink.mjs"), "");
-    writeFileSync(join(dir, "extension/lib/thing.mjs"), "");
+    writeFileSync(join(dir, "extension/huelink-lib/thing.mjs"), "");
     writeFileSync(join(dir, "converter/huelink-exposes.mjs"), "");
     const write = (name, values) => {
         const body = Object.entries(values)

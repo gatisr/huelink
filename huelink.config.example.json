@@ -31,16 +31,19 @@
     "_pacing": "--- The fields below decide how much of the Zigbee coordinator the strip is allowed to take from the rest of the house. Read docs/PACING.md before raising any of them. ---",
 
     "fps": "Target frame rate for sync and effects, 1 to 'maxFps'. This is only the STARTING value: Home Assistant and the zigbee2mqtt device page own it afterwards, so editing it here while running is ignored on purpose rather than fighting the slider. Change it from Home Assistant instead. RESTART REQUIRED.",
-    "maxFps": "Highest frame rate the slider and MQTT will accept, 1 to 50. The default of 5 comes from a send cost measured on a coordinator SHARED with the rest of the house. A coordinator dedicated to the strip is a different machine and may honestly carry more: see 'Separate coordinator' in the README before raising this. Raising it does not raise 'fps', it only permits it. RESTART REQUIRED, because the device page builds its slider from this number when zigbee2mqtt loads the converter.",
+    "maxFps": "Highest frame rate the slider and MQTT will accept, 1 to 50. The default of 5 comes from a send cost measured on a coordinator SHARED with the rest of the house. A coordinator dedicated to the strip may carry more: see 'Separate coordinator' in the README before raising this. Raising it does not raise 'fps', it only permits it. RESTART REQUIRED, because the device page builds its slider from this number when zigbee2mqtt loads the converter.",
     "dutyCap": "How many frames may go out in any single 100 ms window, 1 to 10. A hard instantaneous ceiling and therefore an fps ceiling too: 2 per 100 ms is 20 fps, so going above 20 needs 3. This is the number that bounds how many of our frames can ever sit ahead of a wall switch press. Home Assistant owns it afterwards; this is only where it starts. RESTART REQUIRED.",
-    "occupancyBudget": "Fraction of wall clock time (0.05 to 0.9) the stream may keep the Zigbee coordinator busy. This is the one number that protects the rest of the house. The frame rate it can pay for is roughly occupancyBudget divided by the measured frame cost: at the measured 51 ms, 0.35 buys about 6.9 fps. LIVE.",
+    "occupancyBudget": "Fraction of wall clock time (0.05 to 0.9) the stream may keep the Zigbee coordinator busy. This is the one number that protects the rest of the house. The frame rate it can pay for is roughly occupancyBudget divided by the measured frame cost: at the measured 51 ms, 0.35 buys about 6.9 fps. HA shows it as 'HueLink air budget' in percent (5 to 90). This is only the STARTING value: the Home Assistant slider owns it afterwards. RESTART REQUIRED.",
 
-    "_quality": "--- Picture quality. These change how the strip looks rather than how much air it uses. All LIVE. ---",
+    "_quality": "--- Picture quality. These change how the strip looks rather than how much air it uses. Each has a Home Assistant slider that owns the value while running; the file only sets the starting value. ---",
 
-    "smoothingFactor": "Fade time as a multiple of the measured gap between frames, 1 to 2. Above 1 so the colour never comes to rest between frames, which is the stutter this exists to remove. Higher is smoother but leaves the strip further behind the picture. LIVE.",
-    "bigChangeThreshold": "How many perceptual thresholds a colour change must cross to count as a scene cut, 1 to 40. A cut may skip the frame clock, so this decides how often that happens: 1 means every visible change is a cut and the fps setting stops controlling anything, 40 is effectively off. LIVE.",
-    "fastSmoothingMs": "Fade time for a scene cut, 0 to 500 ms. Short on purpose: a cut is the one moment the strip is visibly behind the picture. 0 is allowed and reads as a click on a cheap strip; 20 to 40 is the range worth trying. LIVE.",
-    "maxFastPerSec": "How many times per second a scene cut may skip the frame clock, 0 to 10. A ration, not a mode: without it a strobe would be 'all cuts' and the fps setting would control nothing. 0 switches the fast path off. The worst case stays fps + maxFastPerSec. LIVE.",
+    "smoothingFactor": "Fade time as a multiple of the measured gap between frames, 1 to 2. Above 1 so the colour never comes to rest between frames, which is the stutter this exists to remove. Higher is smoother but leaves the strip further behind the picture. This is only the STARTING value: the Home Assistant slider owns it afterwards. RESTART REQUIRED.",
+    "bigChangeThreshold": "How many perceptual thresholds a colour change must cross to count as a scene cut, 1 to 40. A cut may skip the frame clock: 1 means every visible change is a cut, 40 is effectively off. This is only the STARTING value: the Home Assistant slider owns it afterwards. RESTART REQUIRED.",
+    "fastSmoothingMs": "Fade time for a scene cut, 0 to 500 ms. Short on purpose: a cut is the one moment the strip is visibly behind the picture. 20 to 40 is the range worth trying. This is only the STARTING value: the Home Assistant slider owns it afterwards. RESTART REQUIRED.",
+    "maxFastPerSec": "How many times per second a scene cut may skip the frame clock, 0 to 10. A ration, not a mode: without it a strobe would be 'all cuts' and the fps setting would control nothing. 0 switches the fast path off. The worst case stays fps + maxFastPerSec. This is only the STARTING value: the Home Assistant slider owns it afterwards. RESTART REQUIRED.",
+    "saturation": "Colour saturation multiplier, 0.5 to 2. 1.0 sends the pixels exactly as the TV sent them. Above 1 pulls colours away from grey (past about 1.7 half-tones collapse into flat primaries); below 1 mutes them. Costs the coordinator nothing. HA shows it as 'HueLink saturation' in percent (50 to 200). This is only the STARTING value: the Home Assistant slider owns it afterwards. RESTART REQUIRED.",
+
+    "_presets": "--- Presets are not configured here; they are data in extension/huelink-lib/presets.json. Picking one sets fps, occupancyBudget and the quality fields above at once (never dutyCap). 'Normal' equals the defaults in this file. ---",
 
     "_burst": "--- The burst. OFF by default. It spends the budget EARLIER, it does not create any. Read the 'Burst' section of docs/PACING.md first. ---",
 
@@ -53,7 +56,7 @@
 
     "sourceTtlMs": "How long a source still counts as alive after its last frame. When it expires, the strip turns off and waits for frames to come back. RESTART REQUIRED.",
     "name": "Last part of the MQTT topic: <base_topic>/<name> for the retained state, <base_topic>/<name>/command for commands. Commands are NOT on '/set': zigbee2mqtt's own router claims every '<base_topic>/<something>/set' topic and would look '<name>' up as a Zigbee device it has never heard of. RESTART REQUIRED.",
-    "locale": "Language of all human-visible strings: 'en' or 'lv'. See extension/lib/i18n/. RESTART REQUIRED."
+    "locale": "Language of all human-visible strings: 'en' or 'lv'. See extension/huelink-lib/i18n/. RESTART REQUIRED."
   },
 
   "device": "Hue Gradient Strip",
@@ -73,6 +76,7 @@
   "bigChangeThreshold": 6,
   "fastSmoothingMs": 50,
   "maxFastPerSec": 1,
+  "saturation": 1.0,
 
   "burstFps": 0,
   "burstMaxMs": 1000,

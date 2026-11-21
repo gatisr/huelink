@@ -6,21 +6,21 @@ How HueLink is put together and why it behaves the way it does.
 
 HueLink drives a Philips Hue gradient light strip directly from zigbee2mqtt, using the strip's own Entertainment streaming mode. No Hue bridge, no Hue account, no cloud.
 
-The alternative was a bridge emulator. Bifrost is roughly 27k lines of Rust, and about 85% of that is emulating a bridge: DTLS handshakes, REST resources, user registration, discovery. HueLink skips all of it. zigbee2mqtt already has the Zigbee link to the strip; the only missing piece was the ~55-byte frame format the strip expects while streaming. That piece is `lib/huepack.mjs`, and it is small. See [PROTOCOL.md](PROTOCOL.md).
+The alternative was a bridge emulator. Bifrost is roughly 27k lines of Rust, and about 85% of that is emulating a bridge: DTLS handshakes, REST resources, user registration, discovery. HueLink skips all of it. zigbee2mqtt already has the Zigbee link to the strip; the only missing piece was the ~55-byte frame format the strip expects while streaming. That piece is `huelink-lib/huepack.mjs`, and it is small. See [PROTOCOL.md](PROTOCOL.md).
 
 ## Module split
 
 | File | Responsibility |
 | --- | --- |
 | `extension/huelink.mjs` | The z2m extension: lifecycle, MQTT, HA discovery, the tick loop |
-| `lib/huepack.mjs` | Pure frame encoding. No I/O, no state. See [PROTOCOL.md](PROTOCOL.md) |
-| `lib/huestream.mjs` | Stream lifecycle: start, frame, reset. Owns the Zigbee send |
-| `lib/arbiter.mjs` | Decides what the strip should be doing right now |
-| `lib/pacer.mjs` | Decides whether this frame is worth sending. See [PACING.md](PACING.md) |
-| `lib/huelink-ui.mjs` | Field names shared with the external converter |
-| `lib/config.mjs` | `huelink.config.json` loading and validation |
-| `lib/i18n/` | Every human-visible string |
-| `lib/effects/` | Effect catalogue and generators. See [EFFECTS.md](EFFECTS.md) |
+| `huelink-lib/huepack.mjs` | Pure frame encoding. No I/O, no state. See [PROTOCOL.md](PROTOCOL.md) |
+| `huelink-lib/huestream.mjs` | Stream lifecycle: start, frame, reset. Owns the Zigbee send |
+| `huelink-lib/arbiter.mjs` | Decides what the strip should be doing right now |
+| `huelink-lib/pacer.mjs` | Decides whether this frame is worth sending. See [PACING.md](PACING.md) |
+| `huelink-lib/huelink-ui.mjs` | Field names shared with the external converter |
+| `huelink-lib/config.mjs` | `huelink.config.json` loading and validation |
+| `huelink-lib/i18n/` | Every human-visible string |
+| `huelink-lib/effects/` | Effect catalogue and generators. See [EFFECTS.md](EFFECTS.md) |
 | `converter/huelink-exposes.mjs` | Adds the `huelink_*` fields to the z2m device page |
 
 The split is along the axis of "can this be tested without a radio". `huepack` and `pacer` are pure functions over data and carry the two pieces of knowledge that were expensive to acquire. `huelink.mjs` is the only file that touches MQTT, UDP or the Zigbee stack.
@@ -38,7 +38,7 @@ This logic lives here and in the arbiter, never in the Lovelace card. A card is 
 
 ## The arbiter
 
-`lib/arbiter.mjs` holds one power flag, one requested mode, and a set of frame sources. `pick()` returns what the strip should actually be doing.
+`huelink-lib/arbiter.mjs` holds one power flag, one requested mode, and a set of frame sources. `pick()` returns what the strip should actually be doing.
 
 The earlier model was a priority list: a `syncEnabled` switch plus a separately chosen effect, with sync winning. Priority answers "who transmits" but it does not answer "how do I get out of here". With three independently switchable things, two could be on with one silent, and the only way to find out which was to try them.
 
@@ -172,7 +172,7 @@ Each tick:
 
 `VERSION` in `huelink.mjs` has one definition and three consumers: the startup log line, the `huelink_version` field on the z2m device page, and the retained `zigbee2mqtt/huelink` payload.
 
-It matters more than usual here. z2m's `bridge/request/extension/save` reloads **only the top-level file**; everything under `lib/` stays in the Node ESM cache until the container restarts. So "I saved it and nothing changed" is a normal, expected outcome, and the version field is how you tell which code is really running. Bump it on every meaningful change.
+It matters more than usual here. z2m's `bridge/request/extension/save` reloads **only the top-level file**; everything under `huelink-lib/` stays in the Node ESM cache until the container restarts. So "I saved it and nothing changed" is a normal, expected outcome, and the version field is how you tell which code is really running. Bump it on every meaningful change.
 
 ## Configuration
 
@@ -239,20 +239,20 @@ How it holds together:
 - No `version` field is set. Without one, `processExtensions` fills in `0.0.0`, which matches `meta.configured` in `database.db`, so z2m does **not** reconfigure the strip. Bumping a version here would mean a full `configure()` cycle over the air for no gain.
 - The cross-folder import works because z2m loads external files by copying them to a temp file **in the same directory**, so relative paths survive. If it ever stopped working, z2m renames the file to `.invalid`, the strip falls back to the stock definition and light control stays intact — the safest possible failure mode.
 
-The converter declares only the **shape** of the fields. Values are published by the extension (`publishExposes`), and writes are picked up over the eventBus from the same `/set` message. The field list itself lives in `lib/huelink-ui.mjs`, so names and ranges are written once and cannot drift.
+The converter declares only the **shape** of the fields. Values are published by the extension (`publishExposes`), and writes are picked up over the eventBus from the same `/set` message. The field list itself lives in `huelink-lib/huelink-ui.mjs`, so names and ranges are written once and cannot drift.
 
 `convertSet` deliberately returns nothing. If it returned `{state: ...}`, z2m would optimistically publish the strip's state by itself; the extension reads every published strip state as "someone just toggled power" (`onEntityState`), and exactly that kind of foreign echo once dropped the mode to light in the middle of a stream. Only the extension publishes, and only behind its own echo guard.
 
 The entities are created **disabled** in HA on purpose: the strip already has a full HueLink control set there as its own device, and a second set next to the light would be two places to set the same thing differently. In the z2m UI they are always visible, which is the whole point of the file.
 
-The z2m field list is deliberately shorter than the HA one. It answers "what version is running and what is it doing now", plus the four screws worth turning from there; the full diagnostic surface belongs in HA. `access` is written as plain numbers (`1` = read only, `3` = read/write) rather than zhc constants, because the same field list is imported by the extension, which must not depend on `zigbee-herdsman-converters` at all.
+The z2m field list mirrors the HA controls: z2m has no way to hide an "expert" field (`category` does nothing in its UI), so the sliders HA disables by default are all visible here. The diagnostic surface beyond the few readings in `FIELDS` belongs in HA. `access` is written as plain numbers (`1` = read only, `3` = read/write) rather than zhc constants, because the same field list is imported by the extension, which must not depend on `zigbee-herdsman-converters` at all.
 
 ## i18n
 
-Everything a human reads is a key, resolved through `lib/i18n/`: log lines, HA entity names, status strings, z2m field labels and descriptions, effect names.
+Everything a human reads is a key, resolved through `huelink-lib/i18n/`: log lines, HA entity names, status strings, z2m field labels and descriptions, effect names.
 
 `en.json` is the base and the only complete file. A locale file is an **overlay** on top of it, so a missing key falls back to English rather than rendering as a blank or a key name. `t(key, params)` does `{placeholder}` substitution only; no pluralisation rules, because no string here needs them.
 
-Effect names are the one exception to the "strings live in i18n" rule: they stay in `effects.json` as `{ "en": ..., "lv": ... }` maps next to the effect they name. An effect is data, and a name you have to go and register in a second file is a reason not to add effects. The i18n parity test reads those maps directly.
+Effect names are `effect.<id>` keys like everything else, so every translation lives in the locale files; `effects.json` holds only the motion data.
 
 Strings that go on the wire are **not** translated: MQTT keys, mode values, `ON`/`OFF`, effect ids. Translating those would make a locale change rewrite the API.

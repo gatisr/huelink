@@ -8,7 +8,7 @@
  * usage: Z2M_WS=ws://host:8080/api node tools/fpsrun.mjs [fps] [seconds]
  */
 
-import { HueStream } from "../extension/lib/huestream.mjs";
+import { HueStream } from "../extension/huelink-lib/huestream.mjs";
 
 /** The synthetic z2m's WebSocket API; add `?token=...` if yours asks for one. */
 const WS = process.env.Z2M_WS ?? "ws://127.0.0.1:8080/api";

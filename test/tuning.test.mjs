@@ -29,9 +29,9 @@ import { fileURLToPath } from "node:url";
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const { BURST_MAX_FPS, DEFAULTS: PACER, FPS_CEILING, LIMITS, MAX_FPS, NOMINAL_SEND_MS, Pacer, TUNABLE } = await import(
-    join(REPO, "extension/lib/pacer.mjs")
+    join(REPO, "extension/huelink-lib/pacer.mjs")
 );
-const { DEFAULTS: CONFIG_DEFAULTS, consistency, loadConfig } = await import(join(REPO, "extension/lib/config.mjs"));
+const { DEFAULTS: CONFIG_DEFAULTS, consistency, loadConfig } = await import(join(REPO, "extension/huelink-lib/config.mjs"));
 
 /** A config file in its own temp dir, since `loadConfig` takes a path. */
 function configWith(values) {
@@ -417,8 +417,8 @@ test("the fps slider is built from the configured ceiling", async () => {
     // The converter and the extension are loaded separately by z2m, so this is
     // the only thing keeping the device page from offering a range the engine
     // overrides.
-    const { CONFIG } = await import(join(REPO, "extension/lib/config.mjs"));
-    const { FIELDS } = await import(join(REPO, "extension/lib/huelink-ui.mjs"));
+    const { CONFIG } = await import(join(REPO, "extension/huelink-lib/config.mjs"));
+    const { FIELDS } = await import(join(REPO, "extension/huelink-lib/huelink-ui.mjs"));
     const fps = FIELDS.find((f) => f.key === "huelink_fps");
     assert.equal(fps.max, CONFIG.maxFps);
     assert.ok(fps.min <= fps.max, "a ceiling below the floor would be an empty slider");

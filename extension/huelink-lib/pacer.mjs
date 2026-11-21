@@ -132,7 +132,7 @@ export const DEFAULTS = {
 /**
  * Ranges for the adjustable knobs. They live here, not in the UI, because the
  * pacer clamps to them anyway and a separate copy would drift into showing
- * numbers the engine silently overrides. `lib/huelink-ui.mjs` imports these.
+ * numbers the engine silently overrides. `huelink-lib/huelink-ui.mjs` imports these.
  */
 export const LIMITS = {
     /**
@@ -156,6 +156,11 @@ export const LIMITS = {
 
     /** Above 0.9 the stream owns the coordinator; below 0.05 it never sends. */
     occupancyBudget: { min: 0.05, max: 0.9, step: 0.05 },
+    /**
+     * The budget as a percent for the UI and MQTT (the engine keeps the
+     * fraction). Written out because `0.05 * 100` is `5.000000000000001`.
+     */
+    occupancyBudgetPct: { min: 5, max: 90, step: 5 },
     /**
      * Fade = measured gap * this. Below 1 the colour comes to rest before the
      * next frame, which is the stutter the factor exists to remove; above 2 the
@@ -197,6 +202,10 @@ export const LIMITS = {
  * are live knobs in Home Assistant and on the z2m device page, so a file that
  * also set them would be a second owner quietly overwriting a person. The
  * file still gives them a STARTING value; it just stops setting them after.
+ *
+ * Five entries below also have a slider (`occupancyBudget`, `smoothingFactor`,
+ * `bigChangeThreshold`, `fastSmoothingMs`, `maxFastPerSec`). `huelink.mjs`
+ * leaves those out of the live file reload for the same reason.
  *
  * `maxFps` is missing for a different reason: the slider that has to respect
  * it is built once, when z2m loads the converter.
@@ -366,7 +375,7 @@ export class Pacer {
      * constructor and for a re-read of `huelink.config.json`, so a value set
      * while running lands in exactly the same place as one set at startup.
      *
-     * Values arrive already validated by `lib/config.mjs`; anything still
+     * Values arrive already validated by `huelink-lib/config.mjs`; anything still
      * unreadable keeps the current value rather than falling back to a
      * default, the same answer every setter above gives.
      *
@@ -377,15 +386,38 @@ export class Pacer {
         const changed = [];
         for (const key of TUNABLE) {
             if (!Object.hasOwn(values, key)) continue;
-            const value = toFinite(values[key]);
-            if (value === null) continue;
-            const { min, max } = this.limit(key);
-            const next = clamp(value, min, max);
-            if (next === this[key]) continue;
-            this[key] = next;
-            changed.push(key);
+            const before = this[key];
+            if (!this.setTunable(key, values[key])) continue;
+            if (this[key] !== before) changed.push(key);
         }
         return changed;
+    }
+
+    /**
+     * The single clamp per knob, shared by setters and preset matching.
+     */
+    static clampKnob(key, value, maxFps) {
+        // Three knobs differ from plain min/max: fps (the configured ceiling),
+        // dutyCap (integer) and burstFps (never below maxFps).
+        if (key === "fps") return clamp(value, 1, maxFps);
+        const { min, max } = LIMITS[key];
+        if (key === "dutyCap") return clamp(Math.round(value), min, max);
+        return clamp(value, min, key === "burstFps" ? Math.max(max, maxFps) : max);
+    }
+
+    /**
+     * One tuning knob, clamped. Returns whether the value was readable (not
+     * whether it changed, unlike `tune`): a command must say so if it was not.
+     *
+     * @param {string} key    a `TUNABLE` name
+     * @returns {boolean}
+     */
+    setTunable(key, value) {
+        if (!TUNABLE.includes(key)) return false;
+        const v = toFinite(value);
+        if (v === null) return false;
+        this[key] = Pacer.clampKnob(key, v, this.maxFps);
+        return true;
     }
 
     /**
@@ -401,14 +433,14 @@ export class Pacer {
      * `null`, `"fast"` or a stray `0` asked the coordinator for the most air
      * time of all, which is the opposite of what an unreadable value deserves.
      * Keeping the current value is the safe answer, and the caller says so in
-     * the log. See `lib/num.mjs`.
+     * the log. See `huelink-lib/num.mjs`.
      *
      * @returns {boolean} whether the value was taken
      */
     setFps(fps) {
         const value = toFinite(fps);
         if (value === null) return false;
-        this.fps = clamp(value, 1, this.maxFps);
+        this.fps = Pacer.clampKnob("fps", value, this.maxFps);
         return true;
     }
 
@@ -416,8 +448,7 @@ export class Pacer {
     setOccupancyBudget(pct) {
         const value = toFinite(pct);
         if (value === null) return false;
-        const { min, max } = LIMITS.occupancyBudget;
-        this.occupancyBudget = clamp(value, min, max);
+        this.occupancyBudget = Pacer.clampKnob("occupancyBudget", value);
         return true;
     }
 
@@ -442,8 +473,7 @@ export class Pacer {
     setDutyCap(n) {
         const value = toFinite(n);
         if (value === null) return false;
-        const { min, max } = LIMITS.dutyCap;
-        this.maxPerWindow = clamp(Math.round(value), min, max);
+        this.maxPerWindow = Pacer.clampKnob("dutyCap", value);
         return true;
     }
 
@@ -702,6 +732,25 @@ export class Pacer {
         return Math.round(Math.min(Math.max(gap * this.smoothingFactor, 10), 2000));
     }
 
+    /**
+     * What the frame cap can actually buy right now. Live counterpart of
+     * `consistency()` in config.mjs, using the measured send price.
+     *   duty:   maxPerWindow frames per windowMs
+     *   budget: occupancyBudget of each second / price of one frame
+     */
+    ceiling() {
+        const round = (n) => Math.round(n * 10) / 10;
+        const duty = round((this.maxPerWindow * 1000) / this.windowMs);
+        const budget = round((this.occupancyBudget * 1000) / this.sendPrice);
+        return {
+            asked: this.fps,
+            duty,
+            budget,
+            sendMs: round(this.sendPrice),
+            effective: Math.min(this.fps, duty, budget),
+        };
+    }
+
     /** Numbers for MQTT state and reporting. */
     stats(now = Date.now()) {
         const { offered, sent, skippedDelta, skippedDuty, keepalive, fast, fastCapped, bursts, burstFrames } =
@@ -735,6 +784,14 @@ export class Pacer {
             // `skippedDelta` without `deltaScalePct` is a number without a scale.
             deltaScalePct: Math.round(this.deltaScale * 100),
             dutyCap: this.maxPerWindow,
+            // Slider knobs: the UI reads their values back from here.
+            occupancyBudgetPct: Math.round(this.occupancyBudget * 100),
+            smoothingFactor: this.smoothingFactor,
+            bigChangeThreshold: this.bigChangeThreshold,
+            fastSmoothingMs: this.fastSmoothingMs,
+            maxFastPerSec: this.maxFastPerSec,
+            // Frame rate currently affordable (see `ceiling()`).
+            fpsCeiling: this.ceiling().effective,
             // The configured ceiling, published because it is otherwise
             // invisible: a slider that refuses to go past 5 looks the same
             // whether the file was read or quietly ignored.

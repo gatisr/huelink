@@ -8,8 +8,8 @@
  * usage: node tools/effectproof.mjs [seconds]
  */
 
-import { EffectEngine, loadEffects } from "../extension/lib/effects/index.mjs";
-import { encodeFrame, segmentAddrs, smoothingFromMs } from "../extension/lib/huepack.mjs";
+import { EffectEngine, loadEffects } from "../extension/huelink-lib/effects/index.mjs";
+import { encodeFrame, segmentAddrs, smoothingFromMs } from "../extension/huelink-lib/huepack.mjs";
 
 const SEGMENTS = 7;
 const NWK = 0x1001;

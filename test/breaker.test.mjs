@@ -19,10 +19,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 process.env.HUELINK_CONFIG = join(HERE, "fixtures", "breaker.config.json");
 
 const { default: HueLink } = await import("../extension/huelink.mjs");
-const { CMD_FRAME } = await import("../extension/lib/huepack.mjs");
-const { CONFIG } = await import("../extension/lib/config.mjs");
-const { t } = await import("../extension/lib/i18n/index.mjs");
-const { MODE_LABEL } = await import("../extension/lib/huelink-ui.mjs");
+const { CMD_FRAME } = await import("../extension/huelink-lib/huepack.mjs");
+const { CONFIG } = await import("../extension/huelink-lib/config.mjs");
+const { t } = await import("../extension/huelink-lib/i18n/index.mjs");
+const { MODE_LABEL } = await import("../extension/huelink-lib/huelink-ui.mjs");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -97,7 +97,20 @@ function harness({ failing, echo = false, echoMs = 80 }) {
             if (fail()) throw new Error("Timeout");
         },
     };
-    const device = { zh: { networkAddress: 0x1234 }, endpoint: () => endpoint, name: CONFIG.device };
+    // `options` is a GETTER returning a fresh object, exactly like z2m's own
+    // `Device.get options()`. The extension takes before/after snapshots of it
+    // around `changeEntityOptions`, and a shared reference would make both
+    // snapshots the same object, so a test on a plain field would pass while
+    // the real thing broke.
+    const deviceOptions = { ID: "0x00178801aabbccdd", friendly_name: CONFIG.device };
+    const device = {
+        zh: { networkAddress: 0x1234 },
+        endpoint: () => endpoint,
+        name: CONFIG.device,
+        get options() {
+            return { ...deviceOptions };
+        },
+    };
 
     const link = new HueLink(
         { resolveEntity: () => device },
@@ -126,11 +139,23 @@ function harness({ failing, echo = false, echoMs = 80 }) {
         // mean an error on EVERY `publishExposes` call, and that would look
         // like an extension fault rather than a missing test harness.
         async () => {},
-        { onMQTTMessage() {}, onPublishEntityState() {}, onLastSeenChanged() {}, removeListeners() {} },
+        {
+            onMQTTMessage() {},
+            onPublishEntityState() {},
+            removeListeners() {},
+            // z2m's HA extension listens on this one and re-runs discovery.
+            // Nothing here needs the effect, but the call must not throw.
+            emitEntityOptionsChanged() {},
+        },
         null,
         null,
         null,
-        { get: () => ({ mqtt: { base_topic: "zigbee2mqtt" }, homeassistant: {} }) },
+        {
+            get: () => ({ mqtt: { base_topic: "zigbee2mqtt" }, homeassistant: {} }),
+            // Shallow on purpose: the only thing the extension writes through
+            // it is the flat `homeassistant: {<key>: null}` map.
+            changeEntityOptions: (id, patch) => Object.assign(deviceOptions, patch),
+        },
         {
             info: (m) => log.info.push(m),
             error: (m) => log.error.push(m),
@@ -140,7 +165,7 @@ function harness({ failing, echo = false, echoMs = 80 }) {
     );
     self = link;
     live.push(link);
-    return { link, log, sends, published, revive: () => (dead = false) };
+    return { link, log, sends, published, deviceOptions, revive: () => (dead = false) };
 }
 
 /** The last published huelink state. */
@@ -264,50 +289,68 @@ async function testResumeOnExplicitCommand() {
     console.log(`  ${h.sends.length - before} more sends after resuming`);
 }
 
-async function testProofOfLifeReopensTheBreaker() {
-    // A TRIP USED TO BE A DEAD END. It clears `armed`, so nothing could relight
-    // the strip and only a person sending a command could undo it. The strip itself is the one thing that knows when it is back, and
-    // z2m reports every frame it hears from it, so that report is what reopens
-    // the breaker -- without anything of ours going out on the air to ask.
+async function testSilentStripStillRecovers() {
+    // A switched-off strip sends nothing, so only the clock can reopen the breaker.
     const h = harness({ failing: true });
     await h.link.start();
     await h.link.setMode(MODE_LABEL.sync);
     let fed = feed(h.link);
     assert.ok(await waitForTrip(h.link), "the breaker should have tripped");
     clearInterval(fed);
-    assert.strictEqual(h.link.armed, null, "a trip still arms nothing at the moment it happens");
 
-    // Noise from the rest of the house is not evidence about this strip.
-    await h.link.onProofOfLife({ name: "Some other lamp" });
-    assert.ok(h.link.tripped, "another device saying hello must not reopen the breaker");
-
-    // The strip itself, but too soon. A strip that answers pings while refusing
-    // entertainment frames would otherwise trip and reopen in a tight loop, and
-    // every turn of that loop costs the coordinator five failed sends.
-    await h.link.onProofOfLife({ name: CONFIG.device });
-    assert.ok(h.link.tripped, "inside the dwell even the strip itself is not enough");
-    assert.strictEqual(h.link.armed, null, "and nothing is armed yet");
-
-    // Past the dwell, and this time the strip really is back.
-    h.link.trippedAt -= 600_000;
     h.revive();
-    await h.link.onProofOfLife({ name: CONFIG.device });
-    assert.strictEqual(h.link.tripped, null, "proof of life must reopen the breaker");
-    assert.strictEqual(h.link.armed, "sync", "and restore the waiting the trip threw away");
-    // ARMED, not lit: being reachable is not the same as the TV being on, so a
-    // strip that comes back to a dark room waits exactly as it would after any
-    // other quiet source.
-    assert.strictEqual(h.link.arbiter.power, false, "reachable is not a reason to switch on");
-
-    // And the arming is real: frames light it again, with nobody pressing
-    // anything.
+    // Inside the dwell nothing may happen by itself: that floor is what keeps
+    // a strip which answers pings while refusing frames out of a tight loop.
     const before = h.sends.length;
     fed = feed(h.link);
-    await sleep(900);
+    await sleep(300);
+    clearInterval(fed);
+    assert.ok(h.link.tripped, "inside the dwell the breaker stays shut");
+    assert.strictEqual(h.sends.length, before, "and nothing goes out on the air");
+
+    // Past the dwell.
+    h.link.trippedAt -= h.link.tripDwellMs + 1000;
+    fed = feed(h.link);
+    await sleep(1200);
     clearInterval(fed);
     await h.link.stop();
-    assert.ok(h.sends.length > before + 3, `frames must flow again by themselves, got ${h.sends.length - before}`);
-    console.log(`  trip -> strip says hello -> re-armed, ${h.sends.length - before} sends with no command`);
+    assert.strictEqual(h.link.tripped, null, "past the dwell the breaker must reopen on its own");
+    assert.ok(
+        h.sends.length > before + 3,
+        `frames must flow again without the strip ever speaking, got ${h.sends.length - before}`,
+    );
+    console.log(`  silent strip -> reopened by the clock, ${h.sends.length - before} sends`);
+}
+
+async function testASilentDeadStripIsNotHammered() {
+    // The other half of the same change. Reopening on a clock is exactly what
+    // `huelink.mjs` warns about: a strip that is really gone would be retried
+    // for ever, and every retry costs FAIL_LIMIT failed frames at ~6 s of
+    // coordinator time each. So each reopen that leads straight back to a trip
+    // must cost LESS often than the last one.
+    const h = harness({ failing: true });
+    await h.link.start();
+    await h.link.setMode(MODE_LABEL.sync);
+    const fed = feed(h.link);
+    assert.ok(await waitForTrip(h.link), "the breaker should have tripped");
+    const first = h.link.tripDwellMs;
+
+    // Still dead, still silent. Jump the dwell: it reopens, tries, and trips
+    // again - and the next wait has to be longer than the one before it.
+    // `tripped` itself never looks cleared from out here, so the RE-trip is
+    // recognised by a fresh timestamp rather than by the flag.
+    const mark = Date.now();
+    h.link.trippedAt -= first + 1000;
+    const until = mark + 25000;
+    while (Date.now() < until && !(h.link.tripped && h.link.trippedAt >= mark)) await sleep(100);
+    assert.ok(h.link.tripped && h.link.trippedAt >= mark, "it must trip again on a dead strip");
+    clearInterval(fed);
+    await h.link.stop();
+    assert.ok(
+        h.link.tripDwellMs > first,
+        `a fruitless retry must widen the wait, got ${h.link.tripDwellMs} after ${first}`,
+    );
+    console.log(`  dead strip -> dwell grows ${first} ms -> ${h.link.tripDwellMs} ms`);
 }
 
 async function testBackoffRecovers() {
@@ -890,7 +933,8 @@ const tests = [
     ["a trip switches off, it does not light up", testTripDoesNotLightTheStrip],
     ["a healthy stream is left alone", testHealthyStreamUnaffected],
     ["an explicit command resumes", testResumeOnExplicitCommand],
-    ["the strip saying hello resumes", testProofOfLifeReopensTheBreaker],
+    ["a silent strip still recovers", testSilentStripStillRecovers],
+    ["a silent dead strip is not hammered", testASilentDeadStripIsNotHammered],
     ["backoff recovers", testBackoffRecovers],
     ["source went quiet -> strip switches off", testSourceSilenceTurnsStripOff],
     ["an armed strip lights itself", testArmedRelightsItself],

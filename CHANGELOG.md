@@ -4,6 +4,37 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.3.0
+
+More controls in Home Assistant, picture presets, saturation, and a breaker that retries on its own. **Nothing moves on its own**: every default is the value it already was, saturation ships at 100 % (bit-identical to 1.2.0 output), and no preset is selected until someone picks one.
+
+### Added
+
+- **Five sliders**, live with no restart, on the z2m device page and on the HueLink device in HA: `huelink_budget` (air budget, 5-90 %), `huelink_smoothing`, `huelink_cut_threshold`, `huelink_cut_ms`, `huelink_cut_per_sec`. Each is also a config field, but the file now only sets the **starting** value (the sliders own it while running; a save that changes one is named in the log). The budget and the four reaction-time sliders (`cut_*`, smoothing) are disabled by default in HA (the budget takes coordinator time from other Zigbee devices); enable them on the entity page if you want them.
+- **`huelink_saturation`** slider, 50-200 %, and `saturation` in the config. `c' = luma + (c - luma) * s` on sRGB bytes; grey and black stay put, and 100 % returns the input untouched. It costs the coordinator nothing.
+- **`huelink_preset`**: Normal, Movies, Sports, Games, Music, Vivid. One pick sets the seven picture knobs; the sliders keep working afterwards. "Normal" equals the shipped defaults. When the live values match no preset the select shows no value (derived, never stored). Presets are data in `extension/huelink-lib/presets.json`; a bad entry is logged and skipped. A preset asking for more fps than `maxFps` allows is trimmed and the log says so. Presets never touch `dutyCap`. Preset names are fixed English (the same on every `locale`), so automations that select one by name keep working.
+- **"Deliverable frame rate"** diagnostic sensor, and a log line when the frame cap asks for more than the duty cap or air budget can pay for. `maxFps` can be raised (e.g. 25) and the slider reaches it; raising it alone changes nothing.
+- **Grouping.** Main view: Mode, Preset, Effect, Effect speed, Status. Pacing knobs are `config`, readings are `diagnostic`; one table in `huelink-lib/huelink-ui.mjs` serves both the z2m page and our discovery payloads, and an unclassified field throws at startup. `Effect brightness` is now `config`.
+- **`via_device`** links the HueLink device to the strip's z2m device.
+
+### Fixed
+
+- **A tripped breaker no longer waits for ever.** A switched-off strip is silent, so a proof-of-life listener alone never reopened it (observed: tripped for 2 h). The 5 minute dwell is now a timer in `tick`, and the listener is gone: it waited on the same dwell, so it could never fire earlier. Each retry that trips again doubles the wait, up to an hour; one frame through resets it.
+- A missing saturation value in an MQTT payload no longer desaturates the strip (`toFinite`, not `Number`).
+- `huelink_status` was a diagnostic on one surface and a plain sensor on the other.
+
+### Changed
+
+- **`extension/lib/` is now `extension/huelink-lib/`.** z2m loads extensions from one shared directory, so a generic `lib/` could collide with another extension's. Imports, `deploy.sh`, tests, tools and docs follow.
+
+### Upgrading
+
+- **Remove the old `lib/`** from `external_extensions/` after deploying (`deploy.sh` copies, never deletes, because the directory may hold other extensions). Only do it if nothing else uses it. Restart z2m: hot reload does not re-read library files.
+- `deploy.sh` copies, never mirrors: a file renamed or deleted in `huelink-lib/` stays on the target until you remove it.
+- The presets and sliders can raise the air budget, which takes coordinator time from every other Zigbee device. Use them at your own risk and watch the Zigbee network closely.
+
+Reload the MQTT integration once (or restart HA): HA reads `entity_category` only when it registers an entity.
+
 ## 1.2.0
 
 The strip no longer strands itself dark, and follows a capture card that keeps sending black only as long as there is something to show.

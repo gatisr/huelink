@@ -27,11 +27,11 @@ import { fileURLToPath } from "node:url";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-const { toFinite } = await import(join(REPO, "extension/lib/num.mjs"));
-const { Pacer, MAX_FPS, LIMITS } = await import(join(REPO, "extension/lib/pacer.mjs"));
-const { EffectEngine, EFFECT_NONE, loadEffects } = await import(join(REPO, "extension/lib/effects/index.mjs"));
-const { MODE_BY_LABEL, MODE_LABEL } = await import(join(REPO, "extension/lib/huelink-ui.mjs"));
-const { loadConfig, DEFAULTS } = await import(join(REPO, "extension/lib/config.mjs"));
+const { toFinite } = await import(join(REPO, "extension/huelink-lib/num.mjs"));
+const { Pacer, MAX_FPS, LIMITS } = await import(join(REPO, "extension/huelink-lib/pacer.mjs"));
+const { EffectEngine, EFFECT_NONE, loadEffects } = await import(join(REPO, "extension/huelink-lib/effects/index.mjs"));
+const { MODE_BY_LABEL, MODE_LABEL } = await import(join(REPO, "extension/huelink-lib/huelink-ui.mjs"));
+const { loadConfig, DEFAULTS } = await import(join(REPO, "extension/huelink-lib/config.mjs"));
 
 const quiet = { error: () => {}, warn: () => {}, info: () => {} };
 
@@ -187,9 +187,9 @@ test("a palette named after a prototype member is refused, not resolved", async 
         catalogue,
         JSON.stringify({
             effects: [
-                { id: "ok", name: { en: "Ok" }, kind: "wave", params: { palette: ["#ff0000", "#00ff00"] } },
-                { id: "bad", name: { en: "Bad" }, kind: "wave", params: { palette: "constructor" } },
-                { id: "worse", name: { en: "Worse" }, kind: "wave", params: { palette: "toString" } },
+                { id: "christmas", kind: "wave", params: { palette: ["#ff0000", "#00ff00"] } },
+                { id: "newyear", kind: "wave", params: { palette: "constructor" } },
+                { id: "valentines", kind: "wave", params: { palette: "toString" } },
             ],
         }),
     );
@@ -198,7 +198,7 @@ test("a palette named after a prototype member is refused, not resolved", async 
     const loaded = await loadEffects(quiet, catalogue, palettes);
     assert.deepEqual(
         loaded.map((e) => e.id),
-        ["ok"],
+        ["christmas"],
         "only the effect with a real palette may survive",
     );
 });
@@ -215,6 +215,12 @@ function recorder() {
     const errors = [];
     return { errors, error: (m) => errors.push(m), warn: () => {}, info: () => {} };
 }
+
+/**
+ * Real ids on purpose: names come from `effect.<id>` in i18n, so an invented
+ * id would be skipped for having no name, not for the fault under test.
+ */
+const REAL_IDS = ["christmas", "newyear", "valentines", "easter", "ligo", "halloween", "independence", "lacplesis"];
 
 /** `effects.json` and `palettes.json` in a throwaway directory. */
 function catalogue(effects, palettes = { real: ["#0000ff"] }) {
@@ -241,31 +247,31 @@ test("a `kind` that climbs out of the generator directory is never imported", as
     // depends on where the generators live, and a hardcoded one would stop
     // climbing far enough the moment a directory is added or removed, and
     // would then pass for the wrong reason.
-    const kind = relative(join(REPO, "extension/lib/effects/generators"), join(dir, "evil"));
+    const kind = relative(join(REPO, "extension/huelink-lib/effects/generators"), join(dir, "evil"));
     assert.match(kind, /\.\./, "the test is only meaningful if the path really climbs out");
 
     const log = recorder();
     const { files } = catalogue([
-        { id: "evil", name: { en: "Evil" }, kind },
-        { id: "ok", name: { en: "Ok" }, kind: "wave", params: { palette: ["#ff0000", "#00ff00"] } },
+        { id: "easter", kind },
+        { id: "christmas", kind: "wave", params: { palette: ["#ff0000", "#00ff00"] } },
     ]);
     const loaded = await loadEffects(log, ...files);
 
     assert.equal(existsSync(marker), false, "the module outside the generator directory was executed");
     assert.deepEqual(
         loaded.map((e) => e.id),
-        ["ok"],
+        ["christmas"],
         "the traversing entry must be skipped and the rest of the catalogue must still load",
     );
     assert.equal(log.errors.length, 1, log.errors.join(" | "));
-    assert.match(log.errors[0], /Evil/, "the skipped entry has to be named, or it is unfindable");
+    assert.match(log.errors[0], /Easter|Lieldienas/, "the skipped entry has to be named, or it is unfindable");
 });
 
 test("a `kind` that is not a plain generator name is refused before import", async () => {
     // The spellings that are not `../` but are still not a file in there.
     const log = recorder();
     const kinds = ["Wave", "wave.mjs", "wave/../wave", "./wave", "sub/wave", "", "constructor", "toString"];
-    const { files } = catalogue(kinds.map((kind, i) => ({ id: `e${i}`, name: { en: `E${i}` }, kind })));
+    const { files } = catalogue(kinds.map((kind, i) => ({ id: REAL_IDS[i], kind })));
     assert.deepEqual(await loadEffects(log, ...files), []);
     assert.equal(log.errors.length, kinds.length, log.errors.join(" | "));
 });
@@ -277,22 +283,22 @@ test("a malformed colour costs its own effect, not the extension", async () => {
     // the HA entities all went with it.
     const log = recorder();
     const { files } = catalogue([
-        { id: "bad", name: { en: "Bad" }, kind: "wave", params: { palette: ["#ff0000", "0000ff"] } },
-        { id: "short", name: { en: "Short" }, kind: "wave", params: { palette: ["#fff"] } },
-        { id: "notacolour", name: { en: "Not a colour" }, kind: "wave", params: { palette: ["#ff0000", 42] } },
-        { id: "ok", name: { en: "Ok" }, kind: "wave", params: { palette: ["#ff0000", "#00FF00"] } },
+        { id: "newyear", kind: "wave", params: { palette: ["#ff0000", "0000ff"] } },
+        { id: "ligo", kind: "wave", params: { palette: ["#fff"] } },
+        { id: "halloween", kind: "wave", params: { palette: ["#ff0000", 42] } },
+        { id: "christmas", kind: "wave", params: { palette: ["#ff0000", "#00FF00"] } },
     ]);
     const loaded = await loadEffects(log, ...files);
 
     assert.deepEqual(
         loaded.map((e) => e.id),
-        ["ok"],
+        ["christmas"],
         "only the effect whose colours are all #rrggbb may survive",
     );
     assert.equal(log.errors.length, 3, log.errors.join(" | "));
     // And the survivor is usable, which is what "skipped, not broken" means.
     const e = new EffectEngine({ effects: loaded, segments: 7, seed: 1, logger: quiet });
-    assert.equal(e.select("Ok"), true);
+    assert.equal(e.select(loaded[0].name), true);
     assert.equal(e.frame(0).length, 7);
 });
 
@@ -335,6 +341,18 @@ test("a config field named after a prototype member is rejected as unknown", () 
     assert.equal(errors.length, 2, errors.join(" | "));
     for (const e of errors) assert.match(e, /unknown field/);
     assert.equal(config.segments, 7, "the real field still works");
+});
+
+test("loadConfig names the keys it could not take, so a live reload keeps what runs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "huelink-config-"));
+    const bad = join(dir, "bad.json");
+    writeFileSync(bad, JSON.stringify({ fps: "7", segments: 7 }));
+    assert.deepEqual(loadConfig(bad).invalid, ["fps"]);
+
+    // Half-saved JSON: every key is unknown, none may be applied as a default.
+    const broken = join(dir, "broken.json");
+    writeFileSync(broken, "{ \"fps\": ");
+    assert.deepEqual(loadConfig(broken).invalid, Object.keys(DEFAULTS));
 });
 
 // ------------------------------------------------- UDP exposure config ----

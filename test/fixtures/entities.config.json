@@ -1,0 +1,7 @@
+{
+  "_comment": "For entities.test.mjs only: made-up device on its own UDP port (test files run concurrently).",
+  "device": "Test Strip",
+  "udpPort": 19449,
+  "startSettleMs": 0,
+  "locale": "en"
+}

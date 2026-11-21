@@ -24,7 +24,7 @@
  *        SEND_MS=51 TICK_MS=20 CUT_S=4 node tools/burstbench.mjs 300 12
  */
 
-import { DEFAULTS, Pacer } from "../extension/lib/pacer.mjs";
+import { DEFAULTS, Pacer } from "../extension/huelink-lib/pacer.mjs";
 
 /** Measured cost of one frame on the coordinator. The one real input. */
 const SEND_MS = Number(process.env.SEND_MS ?? 51);

@@ -10,6 +10,8 @@
 | `test/deploy.test.mjs` | which deploy settings file wins, and where the secrets are not |
 | `test/version.test.mjs` | `VERSION` and `package.json` cannot drift apart |
 | `test/tuning.test.mjs` | the defaults did not move, and the burst cannot overspend |
+| `test/saturation.test.mjs` | 100 % saturation is a no-op down to the encoded bytes |
+| `test/presets.test.mjs` | "Normal" is still the defaults, and presets read back as themselves until a knob moves |
 
 No test needs Zigbee, a bridge, a strip, a broker or a network. A strip that does not answer is just a transport that throws; a TV that switches off is just a source that stops feeding frames.
 
@@ -62,7 +64,7 @@ A frozen fixture and a growing catalogue look like a contradiction, and the temp
 
 So the fixture is never edited. New effect **ids** are listed in `ADDED_SINCE_SNAPSHOT` at the top of the test instead, and the comparisons skip them. The frozen names still have to be present, unchanged, and in the same order, so a rename or a reorder still fails. And a separate case asserts that every id on that list really is loaded, so the list cannot be used to smuggle a deletion past the test by naming something that no longer exists.
 
-The imports are dynamic because `lib/i18n/index.mjs` picks its locale at **module load** and `huelink-ui.mjs` calls `t()` for its fields at that same moment. ESM static imports are hoisted to the top of the file, so setting the environment before them would be too late: the modules would already be loaded under the default locale.
+The imports are dynamic because `huelink-lib/i18n/index.mjs` picks its locale at **module load** and `huelink-ui.mjs` calls `t()` for its fields at that same moment. ESM static imports are hoisted to the top of the file, so setting the environment before them would be too late: the modules would already be loaded under the default locale.
 
 ### The Latvian that stays
 

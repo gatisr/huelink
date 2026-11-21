@@ -14,7 +14,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { EffectEngine, loadEffects } from "../extension/lib/effects/index.mjs";
+import { EffectEngine, loadEffects } from "../extension/huelink-lib/effects/index.mjs";
 import { drawText, textWidth } from "./font5x7.mjs";
 
 /** Minimal PNG writer: one IDAT, filter 0. No dependencies. */

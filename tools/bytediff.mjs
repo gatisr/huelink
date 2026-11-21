@@ -12,7 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import { dtls } from "node-dtls-client";
-import { encodeFrame, MODE_SEGMENT } from "../extension/lib/huepack.mjs";
+import { encodeFrame, MODE_SEGMENT } from "../extension/huelink-lib/huepack.mjs";
 
 const BIFROST_HOST = process.env.BIFROST_HOST ?? "127.0.0.1";
 const BIFROST_PORT = Number(process.env.BIFROST_PORT ?? 2100);

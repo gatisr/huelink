@@ -1,0 +1,4 @@
+{
+  "_comment": "For controls/presets tests only: raises the fps ceiling and nothing else, so every other value stays a built-in default.",
+  "maxFps": 25
+}

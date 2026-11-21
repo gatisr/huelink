@@ -7,7 +7,7 @@
  * two numbers that eventually will not. This test is the thing that notices.
  *
  * It matters more here than in most projects, because the version IS the
- * diagnostic: a hot reload replaces the top-level file and leaves `lib/`
+ * diagnostic: a hot reload replaces the top-level file and leaves `huelink-lib/`
  * cached, so "which code is actually running" is answered by nothing else.
  * A version that lies looks like an answer.
  */

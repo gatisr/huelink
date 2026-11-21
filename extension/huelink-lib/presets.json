@@ -1,0 +1,71 @@
+{
+  "_comment": "Preset catalogue (data, not code). Every preset sets every knob; fps is capped at maxFps, the rest are inside their slider limits. Names are shown as is (not translated). Budgets above 0.35 take coordinator time from other Zigbee devices: see docs/PACING.md.",
+  "presets": [
+    {
+      "id": "normal",
+      "name": "Normal",
+      "fps": 5,
+      "occupancyBudget": 0.35,
+      "smoothingFactor": 1.15,
+      "bigChangeThreshold": 6,
+      "fastSmoothingMs": 50,
+      "maxFastPerSec": 1,
+      "saturationPct": 100
+    },
+    {
+      "id": "movies",
+      "name": "Movies",
+      "fps": 4,
+      "occupancyBudget": 0.35,
+      "smoothingFactor": 1.35,
+      "bigChangeThreshold": 8,
+      "fastSmoothingMs": 60,
+      "maxFastPerSec": 1,
+      "saturationPct": 105
+    },
+    {
+      "id": "sports",
+      "name": "Sports",
+      "fps": 7,
+      "occupancyBudget": 0.5,
+      "smoothingFactor": 1.15,
+      "bigChangeThreshold": 10,
+      "fastSmoothingMs": 50,
+      "maxFastPerSec": 2,
+      "saturationPct": 110
+    },
+    {
+      "id": "games",
+      "name": "Games",
+      "fps": 8,
+      "occupancyBudget": 0.55,
+      "smoothingFactor": 1.05,
+      "bigChangeThreshold": 4,
+      "fastSmoothingMs": 20,
+      "maxFastPerSec": 4,
+      "saturationPct": 105
+    },
+    {
+      "id": "music",
+      "name": "Music",
+      "fps": 4,
+      "occupancyBudget": 0.5,
+      "smoothingFactor": 1,
+      "bigChangeThreshold": 3,
+      "fastSmoothingMs": 20,
+      "maxFastPerSec": 5,
+      "saturationPct": 125
+    },
+    {
+      "id": "vivid",
+      "name": "Vivid",
+      "fps": 5,
+      "occupancyBudget": 0.35,
+      "smoothingFactor": 1.15,
+      "bigChangeThreshold": 6,
+      "fastSmoothingMs": 50,
+      "maxFastPerSec": 1,
+      "saturationPct": 155
+    }
+  ]
+}

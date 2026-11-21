@@ -14,7 +14,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { LOCALE, t } from "../i18n/index.mjs";
+import { t } from "../i18n/index.mjs";
 import { toFinite } from "../num.mjs";
 import { clamp } from "./util.mjs";
 
@@ -55,17 +55,15 @@ function generatorKinds(logger) {
 }
 
 /**
- * Effect name in the chosen language.
- *
- * `name` is a language map (`{"en": ..., "lv": ...}`); a missing translation
- * falls back to "en" rather than to nothing, because the name is also the HA
- * `select` VALUE, and an empty value is an effect nobody can pick. A plain
- * string is accepted too, so a hand-written catalogue still works.
+ * Effect name in the chosen language, from `i18n` key `effect.<id>`. Also the
+ * HA `select` VALUE, so it must never be blank: `t()` falls back to English,
+ * and a key with no entry at all comes back as the key itself (-> `null`).
  */
-function effectName(name, locale = LOCALE) {
-    if (typeof name === "string") return name;
-    if (name && typeof name === "object") return name[locale] ?? name.en ?? null;
-    return null;
+function effectName(id) {
+    if (typeof id !== "string") return null;
+    const key = `effect.${id}`;
+    const name = t(key);
+    return name === key ? null : name;
 }
 
 /**
@@ -132,7 +130,7 @@ export async function loadEffects(
     const out = [];
     const seen = new Set();
     for (const entry of doc.effects ?? []) {
-        const name = effectName(entry?.name);
+        const name = effectName(entry?.id);
         if (!name || !entry?.kind) {
             logger.error(`[huelink] ${t("log.effectMissingFields", { entry: JSON.stringify(entry) })}`);
             continue;
@@ -169,7 +167,7 @@ export async function loadEffects(
         }
         seen.add(name);
         out.push({
-            id: entry.id ?? name,
+            id: entry.id,
             name,
             kind: entry.kind,
             params,
@@ -279,7 +277,7 @@ export class EffectEngine {
      * A value that is not a number is REFUSED, not converted: `NaN` survives
      * `clamp` untouched, and a stored `NaN` makes every later frame throw,
      * which the circuit breaker reads as a broken strip and answers by
-     * switching it off. See `lib/num.mjs`.
+     * switching it off. See `huelink-lib/num.mjs`.
      *
      * @returns {boolean} whether the value was taken (a refusal changes nothing)
      */

@@ -3,15 +3,15 @@
 Effects are **data, not code**. Adding an effect means adding an entry to a JSON file. It does not mean touching a single line of JavaScript.
 
 ```
-lib/effects/effects.json          the catalogue: which effect, what it is called,
+huelink-lib/effects/effects.json          the catalogue: which effect, what it is called,
                                   which generator, which parameters
-lib/effects/palettes.json         named colour palettes, kept separate because one
+huelink-lib/effects/palettes.json         named colour palettes, kept separate because one
                                   palette suits several kinds of motion
-lib/effects/generators/<kind>.mjs one kind of motion (wave, burst, strobe, ...).
+huelink-lib/effects/generators/<kind>.mjs one kind of motion (wave, burst, strobe, ...).
                                   A new KIND OF MOTION is a new file here exporting
                                   create(params, segments, seed)
-lib/effects/index.mjs             the engine
-lib/effects/util.mjs              shared maths: palettes, gradients, rng, mixing
+huelink-lib/effects/index.mjs             the engine
+huelink-lib/effects/util.mjs              shared maths: palettes, gradients, rng, mixing
 ```
 
 The engine knows nothing about any particular effect. All it can do is: take the selected entry, build its generator, advance time, and return one colour per segment.
@@ -30,14 +30,13 @@ Each entry:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Stable, internal. Does not change even if `name` is renamed |
-| `name` | What HA shows; must be unique. A **language map**: `{"en": "...", "lv": "..."}` |
-| `kind` | Which generator file: `lib/effects/generators/<kind>.mjs` |
+| `id` | Stable, internal. Also the i18n key: the name HA shows is `effect.<id>` in `i18n/*.json` |
+| `kind` | Which generator file: `huelink-lib/effects/generators/<kind>.mjs` |
 | `params` | That generator's parameters; documented at the top of its file |
 | `preview` | **Tools only.** How many seconds of the effect to render in the filmstrip |
 | `proof` | **Tools only**, and only for exceptions. `{minDistinct, maxDimRunSeconds, why}` |
 
-**`name` is a language map.** The language comes from `locale` in the config; a missing translation falls back to `"en"`, so `"en"` is **mandatory** for every entry. The prefixes `Holiday:` / `Mood:` / `Party:` are deliberate: the HA list sorts itself and you can find things on a phone.
+**The name lives in i18n, not here.** `effect.<id>` in `huelink-lib/i18n/en.json` (mandatory, unique) and any other locale file; a missing translation falls back to English. An effect with no `effect.<id>` key is skipped and logged. The prefixes `Holiday:` / `Mood:` / `Party:` are deliberate: the HA list sorts itself and you can find things on a phone.
 
 The name is also the HA `select` **value**, which is why a missing translation falls back to English rather than to nothing — an empty value would be an effect you cannot select.
 
@@ -296,8 +295,8 @@ brightness     1.0
 
 ## Adding an effect
 
-1. If an existing `kind` can do it, add one entry to `effects.json` with a unique `name` (with at least `"en"`), a `kind`, and `params`. Done — no code.
-2. If you need a new **kind of motion**, add `lib/effects/generators/<kind>.mjs` exporting `create(params, segments, seed)`, document its parameters at the top of the file, and then do step 1.
+1. If an existing `kind` can do it, add one entry to `effects.json` with a unique `id`, a `kind` and `params`, plus an `effect.<id>` name in `en.json` and `lv.json`. Done — no code.
+2. If you need a new **kind of motion**, add `huelink-lib/effects/generators/<kind>.mjs` exporting `create(params, segments, seed)`, document its parameters at the top of the file, and then do step 1.
 3. If the colours repeat elsewhere, put them in `palettes.json` under an English key and reference them by name.
 
 ## Catalogue

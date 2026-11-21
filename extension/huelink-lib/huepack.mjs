@@ -8,6 +8,8 @@
  * real Hue bridge are in docs/PROTOCOL.md.
  */
 
+import { toFinite } from "./num.mjs";
+
 // Wide-gamut bounds xy is quantised against (Bifrost: WIDE_GAMUT_MAX_X/Y).
 const WIDE_GAMUT_MAX_X = 0.7347;
 const WIDE_GAMUT_MAX_Y = 0.8264;
@@ -67,6 +69,61 @@ function mult(m, d) {
 function gammaToLinear(c8) {
     const c = c8 / 255.0;
     return c > 0.04045 ? ((c + 0.055) / 1.055) ** 2.4 : c / 12.92;
+}
+
+/**
+ * Saturation limits as the multiplier config and presets use. Below 0.5 the
+ * strip goes too grey to reflect the scene; above 2.0 mid-tones clip to flat
+ * primaries. 1.0 is neutral.
+ */
+export const SATURATION = { min: 0.5, max: 2.0, default: 1.0 };
+
+/** The same limits as a percent, which is what HA and MQTT see. */
+export const SATURATION_PCT = {
+    min: Math.round(SATURATION.min * 100),
+    max: Math.round(SATURATION.max * 100),
+    step: 5,
+    default: Math.round(SATURATION.default * 100),
+};
+
+/** The single saturation clamp. Returns `null` for unreadable input. */
+export function clampSaturationPct(pct) {
+    // `toFinite`, not `Number()`: `Number(null)`, `Number("")` and
+    // `Number([])` are 0, which would silently land on the minimum.
+    const n = toFinite(pct);
+    if (n === null) return null;
+    const snapped = Math.round(n / SATURATION_PCT.step) * SATURATION_PCT.step;
+    return Math.min(SATURATION_PCT.max, Math.max(SATURATION_PCT.min, snapped));
+}
+
+/** Rec.709 luma weights. They sum to 1, so grey in is grey out. */
+const LUMA_R = 0.2126;
+const LUMA_G = 0.7152;
+const LUMA_B = 0.0722;
+
+function clamp8(v) {
+    const n = Math.round(v);
+    return n < 0 ? 0 : n > 255 ? 255 : n;
+}
+
+/**
+ * Scale colours away from (or toward) their luma: `c' = luma + (c - luma)*s`.
+ * Works on gamma-encoded sRGB bytes, before `rgbToXy`. Returns new objects
+ * (effects reuse their arrays).
+ *
+ * `s === 1` returns the input untouched: the algebra is not guaranteed exact
+ * in IEEE-754, and neutral must be bit-identical (docs/PROTOCOL.md).
+ */
+export function saturate(colors, s) {
+    if (s === 1) return colors;
+    return colors.map((c) => {
+        const luma = LUMA_R * c.r + LUMA_G * c.g + LUMA_B * c.b;
+        return {
+            r: clamp8(luma + (c.r - luma) * s),
+            g: clamp8(luma + (c.g - luma) * s),
+            b: clamp8(luma + (c.b - luma) * s),
+        };
+    });
 }
 
 /**

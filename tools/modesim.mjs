@@ -21,8 +21,8 @@
 import dgram from "node:dgram";
 
 import HueLink from "../extension/huelink.mjs";
-import { CONFIG } from "../extension/lib/config.mjs";
-import { MODE_LABEL } from "../extension/lib/huelink-ui.mjs";
+import { CONFIG } from "../extension/huelink-lib/config.mjs";
+import { MODE_LABEL } from "../extension/huelink-lib/huelink-ui.mjs";
 
 const WS = process.env.Z2M_WS ?? "ws://127.0.0.1:8080/api";
 const DEVICE = process.env.Z2M_DEVICE ?? "lightstrip_test";

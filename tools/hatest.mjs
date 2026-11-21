@@ -19,8 +19,8 @@
 import mqtt from "mqtt";
 
 import HueLink from "../extension/huelink.mjs";
-import { CONFIG } from "../extension/lib/config.mjs";
-import { MODE_LABEL } from "../extension/lib/huelink-ui.mjs";
+import { CONFIG } from "../extension/huelink-lib/config.mjs";
+import { MODE_LABEL } from "../extension/huelink-lib/huelink-ui.mjs";
 
 const BROKER = process.env.MQTT_URL ?? "mqtt://127.0.0.1:1883";
 const MQTT_USER = process.env.MQTT_USER;

@@ -2,7 +2,7 @@
 
 Why HueLink sends roughly 5 frames per second and not 25, and why that looks better rather than worse.
 
-Implemented in `extension/lib/pacer.mjs`. Every number here was measured, not guessed.
+Implemented in `extension/huelink-lib/pacer.mjs`. Every number here was measured, not guessed.
 
 ## The bottleneck is not the air
 
@@ -211,7 +211,7 @@ Reviewed rather than left alone. The objection was fair: `occupancy()` counts **
 
 ## Adjustable limits
 
-`LIMITS` lives in `pacer.mjs`, not in the UI layer, on purpose: the pacer clamps anyway, and if the slider's ends lived separately the UI would sooner or later show numbers the device silently overwrites. That was the false 5–25 fps slider. `lib/huelink-ui.mjs` imports these rather than restating them.
+`LIMITS` lives in `pacer.mjs`, not in the UI layer, on purpose: the pacer clamps anyway, and if the slider's ends lived separately the UI would sooner or later show numbers the device silently overwrites. That was the false 5–25 fps slider. `huelink-lib/huelink-ui.mjs` imports these rather than restating them.
 
 There are two sets of bounds and they do different jobs, which is worth saying plainly because they look alike. `LIMITS` in `pacer.mjs` is the **real clamp**: whatever reaches the pacer comes out inside those ends, whether it arrived from a slider, from MQTT or from the file. `SPEC` in `config.mjs` is a **typo catcher**: it rejects `"fsp": 50` and a budget of `35` instead of `0.35` loudly, at startup, naming the field, rather than letting a clamp silently turn nonsense into something plausible. A value that passes `SPEC` is still clamped by `LIMITS`; the point of `SPEC` is that you find out.
 
@@ -219,11 +219,11 @@ There are two sets of bounds and they do different jobs, which is worth saying p
 
 | set from | knobs |
 | --- | --- |
-| Home Assistant / the z2m device page, at any time | `fps`, `deltaScalePct`, `dutyCap` |
-| `huelink.config.json`, re-read while running (`TUNABLE`) | `occupancyBudget`, `smoothingFactor`, `bigChangeThreshold`, `fastSmoothingMs`, `maxFastPerSec`, `burstFps`, `burstMaxMs`, `burstCreditMs`, `burstRefill` |
+| Home Assistant / the z2m device page, at any time | `fps`, `deltaScalePct`, `dutyCap`, `occupancyBudget`, `smoothingFactor`, `bigChangeThreshold`, `fastSmoothingMs`, `maxFastPerSec`, saturation |
+| `huelink.config.json`, re-read while running (`FILE_LIVE`) | `burstFps`, `burstMaxMs`, `burstCreditMs`, `burstRefill` |
 | `huelink.config.json`, at startup only | `maxFps`, and everything outside the pacer (`device`, `segments`, `udpPort`, `tickMs`, …) |
 
-The first row is missing from `TUNABLE` deliberately. Those three have live controls in front of a person, and a file that also set them would be a second owner quietly overwriting that person mid-session. The file still gives all three a **starting** value; it just stops setting them afterwards. `maxFps` is in the third row for an unrelated reason: the z2m device page builds the `huelink_fps` slider from it when the converter loads, so a `maxFps` that moved while running would be describing a slider nobody is looking at.
+The first row is not file-live deliberately. Those knobs have live controls in front of a person, and a file that also set them would be a second owner quietly overwriting that person mid-session. The file still gives them a **starting** value; it just stops setting them afterwards. `maxFps` is in the third row for an unrelated reason: the z2m device page builds the `huelink_fps` slider from it when the converter loads, so a `maxFps` that moved while running would be describing a slider nobody is looking at.
 
 Everything in `TUNABLE` is a plain number with a clamp, read fresh on the next frame, which is why applying one mid-stream cannot leave anything half-changed. `segments` and `udpPort` are not like that and are not there.
 

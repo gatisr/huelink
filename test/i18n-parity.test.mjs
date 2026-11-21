@@ -23,10 +23,10 @@ const LIVE = JSON.parse(readFileSync(join(HERE, "fixtures", "live-lv.json"), "ut
 // test-only back door: if config loading breaks, this test must break too.
 process.env.HUELINK_CONFIG = join(HERE, "fixtures", "lv.config.json");
 
-const { CONFIG } = await import(join(REPO, "extension/lib/config.mjs"));
-const { LOCALE, makeTranslator } = await import(join(REPO, "extension/lib/i18n/index.mjs"));
-const { MODE_LABEL, FIELDS } = await import(join(REPO, "extension/lib/huelink-ui.mjs"));
-const { EFFECT_NONE, loadEffects } = await import(join(REPO, "extension/lib/effects/index.mjs"));
+const { CONFIG } = await import(join(REPO, "extension/huelink-lib/config.mjs"));
+const { LOCALE, makeTranslator } = await import(join(REPO, "extension/huelink-lib/i18n/index.mjs"));
+const { MODE_LABEL, FIELDS } = await import(join(REPO, "extension/huelink-lib/huelink-ui.mjs"));
+const { EFFECT_NONE, loadEffects } = await import(join(REPO, "extension/huelink-lib/effects/index.mjs"));
 
 const t = makeTranslator("lv");
 const quiet = { error: () => {}, warn: () => {}, info: () => {} };
@@ -44,6 +44,27 @@ const effects = await loadEffects(quiet);
 const ADDED_SINCE_SNAPSHOT = ["wakeup"];
 const frozen = (list, key) => list.filter((e) => !ADDED_SINCE_SNAPSHOT.includes(e.id)).map((e) => e[key]);
 
+/*
+ * The same escape hatch for `FIELDS`, and for the same reason: the device page
+ * is allowed to grow new controls, but not to reword the ones already in the
+ * fixture.
+ *
+ * It buys exactly one freedom, adding a field. It does not license editing a
+ * frozen description: a reworded one still fails here, which is deliberate even
+ * for a string nobody matches on, because "it is only documentation" is how the
+ * first wire value gets edited too. The test below proves every name on this
+ * list is a real field, so it cannot be used to hide a deletion either.
+ */
+const FIELDS_ADDED_SINCE_SNAPSHOT = [
+    "huelink_budget",
+    "huelink_smoothing",
+    "huelink_cut_threshold",
+    "huelink_cut_ms",
+    "huelink_cut_per_sec",
+    "huelink_preset",
+    "huelink_saturation",
+];
+
 test("the config really did switch the locale", () => {
     assert.equal(CONFIG.locale, "lv");
     assert.equal(LOCALE, "lv");
@@ -56,8 +77,36 @@ test("mode names are unchanged (HA select values and the huelink_mode enum)", ()
 });
 
 test("z2m field labels and descriptions are unchanged", () => {
-    const got = Object.fromEntries(FIELDS.map((f) => [f.key, { label: f.label, description: f.description }]));
+    const got = Object.fromEntries(
+        FIELDS.filter((f) => !FIELDS_ADDED_SINCE_SNAPSHOT.includes(f.key)).map((f) => [
+            f.key,
+            { label: f.label, description: f.description },
+        ]),
+    );
     assert.deepEqual(got, LIVE.fields);
+});
+
+test("every field claimed as new really is one", () => {
+    const keys = FIELDS.map((f) => f.key);
+    for (const key of FIELDS_ADDED_SINCE_SNAPSHOT) {
+        assert.ok(keys.includes(key), `${key} is on the list but not in FIELDS`);
+        assert.ok(!(key in LIVE.fields), `${key} is in the frozen fixture, so it is not new`);
+    }
+});
+
+test("the new fields are translated too, not just present", () => {
+    for (const key of FIELDS_ADDED_SINCE_SNAPSHOT) {
+        const field = FIELDS.find((f) => f.key === key);
+        // A missing i18n key makes `t()` hand back the key itself, which is a
+        // perfectly valid-looking string and would sail through every other
+        // check here. These are the Latvian strings, so the English word
+        // "HueLink" aside, a label that is still an ASCII dotted key is the
+        // tell.
+        for (const part of ["label", "description"]) {
+            assert.ok(!/^field\.[\w.]+$/.test(field[part]), `${key} ${part} is an untranslated key`);
+            assert.ok(field[part].length > 20, `${key} ${part} is too short to be a real ${part}`);
+        }
+    }
 });
 
 test("status lines are unchanged", () => {
@@ -104,8 +153,8 @@ test("every effect loaded: none dropped out over a renamed palette", () => {
  * silently: a missing key makes `t()` return the key itself.
  */
 
-const en = JSON.parse(readFileSync(join(REPO, "extension/lib/i18n/en.json"), "utf8"));
-const lv = JSON.parse(readFileSync(join(REPO, "extension/lib/i18n/lv.json"), "utf8"));
+const en = JSON.parse(readFileSync(join(REPO, "extension/huelink-lib/i18n/en.json"), "utf8"));
+const lv = JSON.parse(readFileSync(join(REPO, "extension/huelink-lib/i18n/lv.json"), "utf8"));
 
 test("both locales carry exactly the same set of keys", () => {
     assert.deepEqual(Object.keys(lv).sort(), Object.keys(en).sort());
@@ -120,8 +169,9 @@ test("every key the code uses is known to both locales", () => {
     // Scraped from the source, not a hand-written list: that would go stale quietly.
     const files = [
         "extension/huelink.mjs",
-        "extension/lib/huelink-ui.mjs",
-        "extension/lib/effects/index.mjs",
+        "extension/huelink-lib/huelink-ui.mjs",
+        "extension/huelink-lib/effects/index.mjs",
+        "extension/huelink-lib/presets.mjs",
         "converter/huelink-exposes.mjs",
     ];
     const used = new Set();
@@ -134,19 +184,28 @@ test("every key the code uses is known to both locales", () => {
     assert.deepEqual(missing, []);
 });
 
-test("every effect has an English name (that is the fallback locale)", () => {
-    const doc = JSON.parse(readFileSync(join(REPO, "extension/lib/effects/effects.json"), "utf8"));
-    const bad = doc.effects.filter((e) => typeof e.name?.en !== "string" || e.name.en.trim() === "");
-    assert.deepEqual(
-        bad.map((e) => e.id),
-        [],
-    );
+test("every catalogue effect has a name in both locales, English included", () => {
+    const doc = JSON.parse(readFileSync(join(REPO, "extension/huelink-lib/effects/effects.json"), "utf8"));
+    const ids = doc.effects.map((e) => e.id);
+    assert.equal(new Set(ids).size, ids.length, "ids must be unique");
+    for (const id of ids) {
+        for (const [loc, table] of [["en", en], ["lv", lv]]) {
+            assert.ok(
+                typeof table[`effect.${id}`] === "string" && table[`effect.${id}`].trim() !== "",
+                `effect.${id} missing in ${loc}.json`,
+            );
+        }
+    }
 });
 
-test("with 'en' the effect names really change and stay unique", async () => {
-    const names = [];
-    const doc = JSON.parse(readFileSync(join(REPO, "extension/lib/effects/effects.json"), "utf8"));
-    for (const e of doc.effects) names.push(e.name.en);
+test("no orphan effect.<id> keys, and English names are unique and plain English", () => {
+    const doc = JSON.parse(readFileSync(join(REPO, "extension/huelink-lib/effects/effects.json"), "utf8"));
+    const ids = new Set(doc.effects.map((e) => e.id));
+    const keys = Object.keys(en).filter((k) => k.startsWith("effect.") && k !== "effect.none");
+    assert.deepEqual(
+        keys.filter((k) => !ids.has(k.slice("effect.".length))),
+        [],
+    );
+    const names = keys.map((k) => en[k]);
     assert.equal(new Set(names).size, names.length);
-    for (const n of names) assert.ok(!/[āčēģīķļņōŗšūž]/i.test(n), n);
 });

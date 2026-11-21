@@ -17,11 +17,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SATURATION } from "./huepack.mjs";
 import { BURST_MAX_FPS, FPS_CEILING, NOMINAL_SEND_MS, DEFAULTS as PACER } from "./pacer.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** Locales with a `lib/i18n/<code>.json`. Here so `i18n` imports this, not the reverse. */
+/** Locales with a `huelink-lib/i18n/<code>.json`. Here so `i18n` imports this, not the reverse. */
 export const LOCALES = ["en", "lv"];
 
 /**
@@ -91,11 +92,16 @@ export const DEFAULTS = {
     burstMaxMs: PACER.burstMaxMs,
     burstCreditMs: PACER.burstCreditMs,
     burstRefill: PACER.burstRefill,
+    /**
+     * Saturation multiplier applied to each frame before encoding. 1.0 is
+     * neutral (pixels unchanged); it costs no coordinator time.
+     */
+    saturation: SATURATION.default,
     /** How long a source stays live without a UDP packet. */
     sourceTtlMs: 1000,
     /** Last segment of the MQTT topic (base_topic/huelink). */
     name: "huelink",
-    /** Language for human-visible strings; see lib/i18n/. */
+    /** Language for human-visible strings; see huelink-lib/i18n/. */
     locale: "en",
 };
 
@@ -133,6 +139,8 @@ const SPEC = {
     burstMaxMs: { kind: "integer", min: 0, max: 30000 },
     burstCreditMs: { kind: "integer", min: 0, max: 60000 },
     burstRefill: { kind: "number", min: 0, max: 2 },
+    // Same limits as `clampSaturationPct`, so a file value is never silently clamped.
+    saturation: { kind: "number", min: SATURATION.min, max: SATURATION.max },
     sourceTtlMs: { kind: "integer", min: 50, max: 600000 },
     name: { kind: "string" },
     locale: { kind: "enum", values: LOCALES },
@@ -232,7 +240,11 @@ export function consistency(config) {
  * Separate from module load so tests can call it with another path.
  *
  * @param {string|null} file  full path, or `null` for automatic
- * @returns {{config: object, errors: string[], warnings: string[], path: string|null}}
+ * `invalid` lists the keys that fell back to a default because the file could
+ * not supply them (every key when the file is unreadable), so a live reload
+ * can keep what is running instead of resetting it.
+ *
+ * @returns {{config: object, errors: string[], warnings: string[], invalid: string[], path: string|null}}
  */
 export function loadConfig(file = null) {
     const path = configFile(file);
@@ -247,15 +259,17 @@ export function loadConfig(file = null) {
     } catch (e) {
         // A missing file is a normal state; broken JSON is not.
         if (e.code !== "ENOENT") errors.push(`${path}: ${e.message}, using defaults for every field`);
-        return { config: { ...DEFAULTS }, errors, warnings: [], path: e.code === "ENOENT" ? null : path };
+        const invalid = e.code === "ENOENT" ? [] : Object.keys(DEFAULTS);
+        return { config: { ...DEFAULTS }, errors, warnings: [], invalid, path: e.code === "ENOENT" ? null : path };
     }
 
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
         errors.push(`${path}: top level must be a JSON object, using defaults for every field`);
-        return { config: { ...DEFAULTS }, errors, warnings: [], path };
+        return { config: { ...DEFAULTS }, errors, warnings: [], invalid: Object.keys(DEFAULTS), path };
     }
 
     const config = { ...DEFAULTS };
+    const invalid = [];
     for (const [key, value] of Object.entries(raw)) {
         // `_comment` and friends are the user's own notes, not fields.
         if (key.startsWith("_")) continue;
@@ -269,11 +283,12 @@ export function loadConfig(file = null) {
         const problem = validate(key, value);
         if (problem) {
             errors.push(`${path}: ${problem}, using default ${JSON.stringify(DEFAULTS[key])}`);
+            invalid.push(key);
             continue;
         }
         config[key] = value;
     }
-    return { config, errors, warnings: consistency(config), path };
+    return { config, errors, warnings: consistency(config), invalid, path };
 }
 
 const loaded = loadConfig();

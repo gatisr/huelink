@@ -255,6 +255,8 @@ async function testHealthyStreamUnaffected() {
 
     assert.strictEqual(h.link.tripped, null, "a healthy stream must not trip the breaker");
     assert.strictEqual(h.log.error.length, 0, `a healthy stream logs no errors, got: ${h.log.error[0]}`);
+    // The new warnings must not cry wolf: no stall, slow-send or failure lines.
+    assert.deepStrictEqual(stallWarnings(h.log), [], "a healthy stream must not log stall warnings");
     // The threshold comes from the config, not a constant. It used to read
     // "10", true at `fps: 12`; when the default dropped to `MAX_FPS`, a healthy
     // stream started looking broken purely because the expected number was
@@ -262,6 +264,65 @@ async function testHealthyStreamUnaffected() {
     const frames = h.sends.filter((s) => s === "cmd:1").length;
     assert.ok(frames >= CONFIG.fps, `expected at least ${CONFIG.fps} frames in 1.5 s, got ${frames}`);
     console.log(`  ${frames} frames sent in 1.5 s, breaker intact`);
+}
+
+/** The "a frame was late" warnings. */
+const stallWarnings = (log) =>
+    log.warning.filter((m) => ["log.frameFailed", "log.stalled"].some((k) => logLine(k).test(m)));
+
+async function testAFailedFrameIsNotSilent() {
+    // One frame fails, the next goes through. `failures` resets, so the
+    // breaker never trips and, before this line existed, the log said nothing
+    // while the strip froze for the backoff.
+    const h = harness({ failing: false });
+    await h.link.start();
+    let thrown = false;
+    h.link.stream.transport.zclCommand = async (c) => {
+        h.sends.push(`cmd:${c.command}`);
+        await sleep(5);
+        if (c.command === CMD_FRAME && !thrown) {
+            thrown = true;
+            throw new Error("MAC_NO_ACK test-marker");
+        }
+    };
+    await h.link.setMode(MODE_LABEL.sync);
+    const fed = feed(h.link);
+    await sleep(1500);
+    clearInterval(fed);
+    await h.link.stop();
+
+    assert.strictEqual(h.link.tripped, null, "one failed frame must not trip the breaker");
+    const lines = h.log.warning.filter((m) => logLine("log.frameFailed").test(m));
+    assert.strictEqual(lines.length, 1, `expected exactly one failed-frame warning, got ${lines.length}`);
+    assert.ok(lines[0].includes("MAC_NO_ACK test-marker"), `the line must carry the error text: ${lines[0]}`);
+        await h.link.publishState();
+    assert.strictEqual(lastState(h.published).pacer.sendFailures, 1, "the count is published");
+    console.log(`  ${lines[0]}`);
+}
+
+async function testASlowFrameIsReported() {
+    const h = harness({ failing: false });
+    await h.link.start();
+    let frames = 0;
+    h.link.stream.transport.zclCommand = async (c) => {
+        h.sends.push(`cmd:${c.command}`);
+        // The fourth frame is the slow one; the first three give the watch a
+        // previous frame to measure from.
+        const slow = c.command === CMD_FRAME && ++frames === 4;
+        await sleep(slow ? 700 : 5);
+    };
+    await h.link.setMode(MODE_LABEL.sync);
+    const fed = feed(h.link);
+    await sleep(2500);
+    clearInterval(fed);
+    await h.link.stop();
+
+    assert.strictEqual(h.link.tripped, null);
+    // Throttled: one line even though the lockout after the slow send is a second stall.
+    const stalled = h.log.warning.filter((m) => logLine("log.stalled").test(m));
+    assert.strictEqual(stalled.length, 1, `expected one stall line, got ${stalled.length}`);
+    assert.ok(logLine("log.stallCause.send").test(stalled[0]), `the line must name the send: ${stalled[0]}`);
+    console.log(`  ${stalled[0]}`);
 }
 
 async function testResumeOnExplicitCommand() {
@@ -932,6 +993,8 @@ const tests = [
     ["trips and then goes quiet", testTripsAndGoesQuiet],
     ["a trip switches off, it does not light up", testTripDoesNotLightTheStrip],
     ["a healthy stream is left alone", testHealthyStreamUnaffected],
+    ["a failed frame is not silent", testAFailedFrameIsNotSilent],
+    ["a slow frame is reported once, with its causes", testASlowFrameIsReported],
     ["an explicit command resumes", testResumeOnExplicitCommand],
     ["a silent strip still recovers", testSilentStripStillRecovers],
     ["a silent dead strip is not hammered", testASilentDeadStripIsNotHammered],

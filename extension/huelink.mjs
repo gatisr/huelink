@@ -26,6 +26,7 @@ import { t } from "./huelink-lib/i18n/index.mjs";
 import { toFinite } from "./huelink-lib/num.mjs";
 import { LIMITS, Pacer, TUNABLE } from "./huelink-lib/pacer.mjs";
 import { KNOB_KEYS, landed, match } from "./huelink-lib/presets.mjs";
+import { StallWatch, Throttle } from "./huelink-lib/stallwatch.mjs";
 import {
     KNOBS,
     MODE_BY_LABEL,
@@ -52,7 +53,7 @@ import {
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.3.0";
+export const VERSION = "1.3.1";
 
 /** Knobs with a slider: the file only sets their startup value (a live reload would fight the slider). */
 const SLIDER_OWNED = new Set(["occupancyBudget", ...KNOBS.map((k) => k.knob)]);
@@ -108,6 +109,9 @@ const CONFIG_WATCH_MS = 2000;
 const FAIL_LIMIT = 5;
 /** Pause after the 1st, 2nd and subsequent failed frames (ms). */
 const FAIL_BACKOFF_MS = [200, 1000, 3000];
+
+/** Each kind of stall line is written at most this often; the rest are counted. Faults repeat per frame. */
+const STALL_LOG_EVERY_MS = 10_000;
 
 /**
  * How long a tripped breaker stays shut; then `tick` reopens it. A re-trip
@@ -281,6 +285,14 @@ export default class HueLink {
         // carries depends on the air, so it is measured rather than assumed.
         this.sent = 0;
         this.fpsReal = 0;
+        /** Watches why frames arrive late and logs it; never decides what is sent. */
+        this.stall = new StallWatch();
+        this.stallLog = {
+            failed: new Throttle(STALL_LOG_EVERY_MS),
+            stalled: new Throttle(STALL_LOG_EVERY_MS),
+        };
+        /** Start of the frame send in flight, for failure timing. */
+        this.sendStartedAt = 0;
         /** Consecutive failed frames; one success resets it. */
         this.failures = 0;
         /** Last verdict `reportCeiling` logged (null = none yet), so it logs on change only. */
@@ -700,7 +712,7 @@ export default class HueLink {
                 this.armed = null;
                 this.arbiter.power = true;
                 this.arbiter.requested = mode;
-                this.pacer.reset();
+                this.resetPacing();
                 this.logger.info(`[huelink] ${t("log.resumed", { mode: MODE_LABEL[mode] })}`);
                 await this.publishState();
             }
@@ -779,10 +791,15 @@ export default class HueLink {
                 // suppression. `null` means "do not send this frame" and is not
                 // an error, so `failures` is left alone. See docs/PACING.md.
                 const decision = this.pacer.decide(shown);
+                // "delta" means nothing visibly changed: that is not a late frame.
+                if (!decision) this.stall.observe(Date.now(), this.pacer.lastSkip === "delta" ? "quiet" : this.pacer.lastSkip);
                 if (decision) {
                     this.stream.setSmoothingMs(decision.smoothingMs);
                     const t0 = Date.now();
+                    this.sendStartedAt = t0;
                     await this.stream.frame(shown);
+                    const sendMs = Date.now() - t0;
+                    this.sendStartedAt = 0;
                     // Send duration IS coordinator occupancy, which is what the
                     // budget measures, so it self-corrects as the coordinator
                     // slows. `decision.fast` is passed on because a scene cut
@@ -790,11 +807,12 @@ export default class HueLink {
                     // would shorten the fade of every ordinary frame after it.
                     this.pacer.noteSent(
                         decision.perceptual,
-                        Date.now() - t0,
+                        sendMs,
                         Date.now(),
                         decision.fast,
                     );
                     this.sent++;
+                    this.noteFrameTimes(sendMs);
                     // It went through: the strip answers, so earlier failures
                     // were transient and the counter starts from zero. The
                     // dwell ladder resets here only: an accepted frame is the
@@ -804,6 +822,8 @@ export default class HueLink {
                     this.tripDwellMs = TRIP_DWELL_MS;
                 }
             } else {
+                // Nothing is expected to flow, so no frame is late.
+                this.stall.reset();
                 this.failures = 0;
             }
         } catch (e) {
@@ -811,6 +831,45 @@ export default class HueLink {
         } finally {
             this.sending = false;
         }
+    }
+
+    /**
+     * One log line of a kind, at most once per `STALL_LOG_EVERY_MS`, with the
+     * number of occurrences swallowed since the previous one appended.
+     */
+    logStall(kind, key, params, level = "warning") {
+        const hit = this.stallLog[kind].hit(Date.now());
+        if (!hit) return;
+        const more = hit.held ? ` ${t("log.stallMore", { count: hit.held })}` : "";
+        this.logger[level](`[huelink] ${t(key, params)}${more}`);
+    }
+
+    /**
+     * After a frame went out: did the gap since the previous one add up to a
+     * stall. Reports only.
+     */
+    noteFrameTimes(sendMs) {
+        const report = this.stall.sent(Date.now(), sendMs);
+        if (!report) return;
+        const round = (ms) => Math.round(ms);
+        const parts = ["send", "backoff", "budget", "window"]
+            .filter((key) => report.causes[key] >= 50)
+            .sort((a, b) => report.causes[b] - report.causes[a])
+            .map((key) => t(`log.stallCause.${key}`, { ms: round(report.causes[key]) }));
+        // Pacer-only waits (budget, window) are throttling working, not a fault.
+        const fault = report.causes.send + report.causes.backoff >= 50;
+        this.logStall("stalled", "log.stalled", { total: round(report.totalMs), causes: parts.join(", ") }, fault ? "warning" : "info");
+    }
+
+    /** `pacer.stats()` plus stall counters. */
+    stats() {
+        return { ...this.pacer.stats(), ...this.stall.stats() };
+    }
+
+    /** Forget frame history (pacer and stall watch) when the content changes. */
+    resetPacing() {
+        this.pacer.reset();
+        this.stall.reset();
     }
 
     /**
@@ -825,11 +884,22 @@ export default class HueLink {
      */
     async onFailure(error) {
         this.failures++;
+        this.stall.failed(Date.now(), this.sendStartedAt || undefined);
+        this.sendStartedAt = 0;
         if (this.failures < FAIL_LIMIT) {
             const i = Math.min(this.failures - 1, FAIL_BACKOFF_MS.length - 1);
             this.retryAt = Date.now() + FAIL_BACKOFF_MS[i];
+            // Failures that never reach the breaker (a frame gets through
+            // between them) would otherwise freeze the strip silently.
+            this.logStall("failed", "log.frameFailed", {
+                n: this.failures,
+                limit: FAIL_LIMIT,
+                pauseMs: FAIL_BACKOFF_MS[i],
+                error: error.message,
+            });
             return;
         }
+        this.stall.reset();
 
         const mode = this.arbiter.requested;
         const label = MODE_LABEL[mode] ?? mode;
@@ -1123,7 +1193,7 @@ export default class HueLink {
         // The previous content's last colour does not apply to the new one:
         // keeping it could let delta suppression swallow the first frame of the
         // new mode just because it happens to resemble the old one.
-        this.pacer.reset();
+        this.resetPacing();
         await this.settle();
         await this.publishState();
     }
@@ -1175,7 +1245,7 @@ export default class HueLink {
         for (const [name, source] of Object.entries(this.sources)) {
             if (name !== mode) source.clear();
         }
-        this.pacer.reset();
+        this.resetPacing();
         await this.settle();
         await this.publishState();
     }
@@ -1581,7 +1651,7 @@ export default class HueLink {
      *
      * @param {object} [stats]  `pacer.stats()`, when the caller already has it
      */
-    async publishExposes(stats = this.pacer.stats()) {
+    async publishExposes(stats = this.stats()) {
         // Before `start()` finishes there is no device yet; `publishState` is
         // also called by `setPower`, which can run before `resolveEntity`.
         if (!this.device) return;
@@ -1633,7 +1703,7 @@ export default class HueLink {
         // times a second in effect mode. Taking it twice also meant the two
         // views could describe two different moments, which is exactly what
         // publishing them together is meant to prevent.
-        const stats = this.pacer.stats();
+        const stats = this.stats();
         // Single convergence point for slider, MQTT command and config reload.
         this.reportCeiling();
         try {
@@ -1648,7 +1718,7 @@ export default class HueLink {
         await this.publishExposes(stats);
     }
 
-    async #publishRetained(stats = this.pacer.stats()) {
+    async #publishRetained(stats = this.stats()) {
         await this.mqtt.publish(
             CONFIG.name,
             JSON.stringify({

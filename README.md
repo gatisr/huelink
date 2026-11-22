@@ -280,6 +280,7 @@ stateDiagram-v2
 | Strip ignores everything, no `[huelink]` log lines | Extension did not start: files not in `external_extensions/`, or `device` does not match a `friendly_name`. |
 | Mode is Sync, nothing happens | Sync with no frames is `off` by design. Check: Hyperion capture running; controller is `udpraw` to the z2m host and right port; UDP port published in Docker; `tools/udpdump.py` sees 21-byte datagrams. |
 | Dark and unsure why | Read `huelink_status`. **armed** = waiting for frames, normal. **tripped** (`"<mode> stopped: strip not answering"`) = breaker open; it retries itself, or pick a mode / toggle power to retry now. |
+| Sync freezes, then catches up; log says `the picture reached the strip N ms late` | Each line names where the time went (frame in flight, pause after a failed frame, air budget, frame quota). The `frame send failed` line just before it carries the real error. See [docs/PACING.md](docs/PACING.md), "Latency spikes and the occupancy meter". |
 | `fps_real` below `fps` | Normal: the pacer trims frames by budget and delta suppression. High `dropped` + low `fps_real` = suppression working; low `dropped` + low `fps_real` = sends are failing. See [docs/PACING.md](docs/PACING.md). |
 | Edited a file under `huelink-lib/`, nothing changed | z2m reloads only the top-level file; `huelink-lib/` stays cached until a process restart. Confirm with `huelink_version`. |
 | Light off button does nothing mid-stream | Should not happen (HueLink intercepts power on the strip's `/set`). The extension is not running. |

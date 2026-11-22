@@ -209,6 +209,17 @@ Reviewed rather than left alone. The objection was fair: `occupancy()` counts **
 3. With the new UI ceiling the worst reachable figure is 23.3 % (26.5 % at p90 cost) and zero window hits. The budget is no longer the regulator, it is the net. Lowering it to 0.30 would mean the net starts catching ordinary cost variation (26.5 % vs 0.8 × 0.30 = 24 %), i.e. visible stutter for no gain in average load — the average is now set by the tick.
 4. The actual crash cause (`SRSP - AF - dataRequest after 6000ms`) comes from the **tail**, not the average: `worstSendMs` p90 is 238 ms, maximum 5810 ms. An average-load budget does not address that; removing burstiness does.
 
+## Latency spikes and the occupancy meter
+
+`noteSent()` records the whole `await` of a frame as coordinator occupancy, including time the send spent queued in herdsman or retried in the adapter. One slow send therefore reads as a second of heavy load: `occupancy()` sums the last second and `decide()` refuses frames while it is at or above the budget.
+
+- At 0.35 a lone 150 ms send next to four ordinary ones (4 × 51 + 150) reads 0.354 and holds frames back until the oldest entry ages out.
+- A 6 s stall (`SRSP - AF - dataRequest after 6000ms`, seen on a real rig, which also failed other devices' commands) used to keep the meter full, inflate `avgSendMs` 4x for 40 frames and trigger a false "frame cap asks for N fps" warning.
+
+**Since 1.3.1** one send adds at most `MAX_CHARGE_MS` (250 ms, just above the measured p90 of 238 ms) to the meter, the price and the burst bucket. Ordinary sends are charged in full; a stall is charged like a slow send, so the pacer still backs off for a moment but not for seconds. There is no cliff and no setting. `worstSendMs` stays uncapped, so the real stall time remains visible.
+
+Diagnosis: `skippedWindow` and `skippedBudget` (their sum is `skippedDuty`), a `frame send failed` line for failures below the breaker threshold, and a `the picture reached the strip N ms late` line when a frame arrives more than 400 ms late, split into `send`, `backoff` (the 200 / 1000 / 3000 ms pause after a failure), `budget` and `window`. The fps clock and "nothing changed" are not counted. Budget and window waits log at info (throttling working); send and backoff log as warnings. Lines are limited to one per kind per 10 s; `stalls`, `worstStallMs` and `sendFailures` count all of them.
+
 ## Adjustable limits
 
 `LIMITS` lives in `pacer.mjs`, not in the UI layer, on purpose: the pacer clamps anyway, and if the slider's ends lived separately the UI would sooner or later show numbers the device silently overwrites. That was the false 5–25 fps slider. `huelink-lib/huelink-ui.mjs` imports these rather than restating them.

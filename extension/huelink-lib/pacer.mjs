@@ -69,6 +69,14 @@ export const BURST_MAX_FPS = 15;
  */
 export const NOMINAL_SEND_MS = 51;
 
+/**
+ * Most one send can add to the occupancy meter, the price and the burst bucket.
+ * Above p90 (238 ms), so ordinary sends are charged in full; a 6 s stall is
+ * charged like a 250 ms one instead of filling the meter for the next second.
+ * The real duration still shows in `worstSendMs`. See docs/PACING.md.
+ */
+export const MAX_CHARGE_MS = 250;
+
 /** Defaults when the caller passes nothing. */
 export const DEFAULTS = {
     /** Target frame rate: a ceiling, not a promise. */
@@ -303,6 +311,8 @@ export class Pacer {
         this.lastSendAt = 0;
         /** How long the coordinator was busy with our recent frames. */
         this.durations = new Ring(40);
+        /** Uncapped send times, for `worstSendMs` only. */
+        this.rawDurations = new Ring(40);
         /** Real gaps between sent frames. */
         this.intervals = new Ring(40);
         /** Occupancy window: [time, duration] over the last second. */
@@ -328,12 +338,17 @@ export class Pacer {
         this.creditAt = null;
         /** A burst is running until this time, or 0 when none is. */
         this.burstUntil = 0;
+        /** Why the last `decide()` returned null: "clock", "window", "budget" or "delta". Informational. */
+        this.lastSkip = null;
 
         this.counters = {
             offered: 0,
             sent: 0,
             skippedDelta: 0,
-            skippedDuty: 0,
+            /** Held back by the per-window cap (burstiness). */
+            skippedWindow: 0,
+            /** Held back by the occupancy budget (cost of the last second). */
+            skippedBudget: 0,
             keepalive: 0,
             /** Frames that took the fast path (scene cuts). */
             fast: 0,
@@ -608,6 +623,7 @@ export class Pacer {
      */
     decide(colors, now = Date.now()) {
         this.counters.offered++;
+        this.lastSkip = null;
         this.#trim(now);
         this.#accrue(now);
 
@@ -630,12 +646,14 @@ export class Pacer {
         //    latency is visible, and cuts are rare, so it costs almost nothing.
         const minGap = 1000 / (burst ? Math.max(this.fps, this.burstFps) : this.fps);
         if (!big && this.lastSendAt && now - this.lastSendAt < minGap) {
+            this.lastSkip = "clock";
             return null; // not yet due; this is the clock, not a skip
         }
 
         // 2. Duty cap, hard part: frames per window. Applies to the fast path too.
         if (this.sendTimes.length >= this.maxPerWindow) {
-            this.counters.skippedDuty++;
+            this.counters.skippedWindow++;
+            this.lastSkip = "window";
             return null;
         }
 
@@ -651,7 +669,8 @@ export class Pacer {
         //    `maxPerWindow` of our frames can be queued ahead of the rest of
         //    the house at any instant.
         if (!burst && this.occupancy(now) >= this.occupancyBudget) {
-            this.counters.skippedDuty++;
+            this.counters.skippedBudget++;
+            this.lastSkip = "budget";
             return null;
         }
 
@@ -660,6 +679,7 @@ export class Pacer {
         const stale = now - this.lastSendAt >= this.keepaliveMs;
         if (!stale && mag < 1) {
             this.counters.skippedDelta++;
+            this.lastSkip = "delta";
             return null;
         }
         if (stale && this.lastPerceptual && mag < 1) {
@@ -694,15 +714,17 @@ export class Pacer {
         this.lastSendAt = now;
         this.lastPerceptual = perceptual;
         this.sendTimes.push(now);
-        this.durations.push(durationMs);
-        this.busy.push([now, durationMs]);
+        this.counters.sent++;
+        this.rawDurations.push(durationMs);
+        const charged = Math.min(durationMs, MAX_CHARGE_MS);
+        this.durations.push(charged);
+        this.busy.push([now, charged]);
         // Every send is paid out of the bucket, burst or not. That single line
         // is what makes the budget a long-term average rather than a hole: a
         // burst can only spend what quiet scenes put in, and the floor stops a
         // coordinator stall from inventing a debt that takes minutes of
         // darkness to work off.
-        this.credit = Math.max(this.credit - durationMs, -this.burstCreditMs);
-        this.counters.sent++;
+        this.credit = Math.max(this.credit - charged, -this.burstCreditMs);
     }
 
     /** After a mode change the history no longer describes the new content. */
@@ -714,6 +736,7 @@ export class Pacer {
         this.fastTimes = [];
         this.intervals = new Ring(40);
         this.durations = new Ring(40);
+        this.rawDurations = new Ring(40);
         // The burst goes, the bucket stays. A mode change says nothing about
         // the coordinator: the budget those seconds earned was real, and
         // handing it back would make every mode change a free burst.
@@ -753,13 +776,15 @@ export class Pacer {
 
     /** Numbers for MQTT state and reporting. */
     stats(now = Date.now()) {
-        const { offered, sent, skippedDelta, skippedDuty, keepalive, fast, fastCapped, bursts, burstFrames } =
+        const { offered, sent, skippedDelta, skippedWindow, skippedBudget, keepalive, fast, fastCapped, bursts, burstFrames } =
             this.counters;
         return {
             offered,
             sent,
             skippedDelta,
-            skippedDuty,
+            skippedDuty: skippedWindow + skippedBudget,
+            skippedWindow,
+            skippedBudget,
             keepalive,
             fast,
             fastCapped,
@@ -773,7 +798,7 @@ export class Pacer {
             deltaHitPct: offered ? Math.round((skippedDelta / offered) * 1000) / 10 : 0,
             occupancyPct: Math.round(this.occupancy(now) * 1000) / 10,
             avgSendMs: Math.round(this.durations.mean * 10) / 10,
-            worstSendMs: Math.round(this.durations.max * 10) / 10,
+            worstSendMs: Math.round(this.rawDurations.max * 10) / 10,
             avgGapMs: Math.round(this.intervals.mean),
             // Median sits next to the mean on purpose: their difference is the
             // only number that shows how skewed the gap distribution is, and

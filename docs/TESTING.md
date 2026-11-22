@@ -10,6 +10,7 @@
 | `test/deploy.test.mjs` | which deploy settings file wins, and where the secrets are not |
 | `test/version.test.mjs` | `VERSION` and `package.json` cannot drift apart |
 | `test/tuning.test.mjs` | the defaults did not move, and the burst cannot overspend |
+| `test/stall.test.mjs` | the stall watch attributes late frames to the right cause on a fake clock; the pacer's skip reason and send-charge cap |
 | `test/saturation.test.mjs` | 100 % saturation is a no-op down to the encoded bytes |
 | `test/presets.test.mjs` | "Normal" is still the defaults, and presets read back as themselves until a knob moves |
 

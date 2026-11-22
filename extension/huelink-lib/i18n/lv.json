@@ -148,6 +148,13 @@
   "log.presetApplied": "profils '{name}' pielietots: {knobs}",
   "log.presetFpsTrimmed": "profils '{name}' prasa {asked} kadrus/s, šī instalācija atļauj {max}. Cel 'maxFps' huelink.config.json tikai tad, ja koordinators to var panest (sk. README, 'Separate coordinator')",
   "log.unknownPreset": "nezināms profils '{value}', ignorēts",
+  "log.frameFailed": "kadra sūtīšana neizdevās ({n}/{limit}), pauze {pauseMs} ms pirms nākamā mēģinājuma: {error}",
+  "log.stalled": "aina lentei pienāca {total} ms par vēlu: {causes}",
+  "log.stallCause.send": "kadrs ceļā {ms} ms",
+  "log.stallCause.backoff": "pauze pēc neizdevuša kadra {ms} ms",
+  "log.stallCause.budget": "ētera budžets izsmelts {ms} ms",
+  "log.stallCause.window": "kadru kvota uz 100 ms izsmelta {ms} ms",
+  "log.stallMore": "(+{count} līdzīgi pēdējās sekundēs, nav rakstīti)",
 
   "error.paletteCycle": "palete '{name}' atsaucas pati uz sevi",
   "error.paletteUnknown": "nav tādas paletes: '{name}'",

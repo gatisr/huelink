@@ -148,6 +148,13 @@
   "log.presetApplied": "preset '{name}' applied: {knobs}",
   "log.presetFpsTrimmed": "preset '{name}' asks for {asked} fps, this installation allows {max}. Raise 'maxFps' in huelink.config.json only if the coordinator can carry it (see README, 'Separate coordinator')",
   "log.unknownPreset": "unknown preset '{value}', ignored",
+  "log.frameFailed": "frame send failed ({n}/{limit}), pausing {pauseMs} ms before the next try: {error}",
+  "log.stalled": "the picture reached the strip {total} ms late: {causes}",
+  "log.stallCause.send": "frame in flight {ms} ms",
+  "log.stallCause.backoff": "pause after a failed frame {ms} ms",
+  "log.stallCause.budget": "air budget used up {ms} ms",
+  "log.stallCause.window": "frame quota per 100 ms used up {ms} ms",
+  "log.stallMore": "(+{count} more like this in the last seconds, not logged)",
 
   "error.paletteCycle": "palette '{name}' refers to itself",
   "error.paletteUnknown": "no such palette: '{name}'",

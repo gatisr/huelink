@@ -4,6 +4,25 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.3.1
+
+A strip that freezes for a moment and then catches up now says so, and says why. The stall watch only observes and logs; the one behaviour change is the per-send charge cap under "Changed".
+
+### Added
+
+- **`the picture reached the strip N ms late`** log line, written by the next frame that gets through after a gap. It splits the lost time into `send`, `backoff` (pause after a failed frame), `budget` and `window` (the pacer's own limits, logged at info). The fps clock and an unchanged picture are never counted. See `huelink-lib/stallwatch.mjs`.
+- **Failed frames below the breaker threshold are logged**, with the error text. They used to freeze the strip for 200 ms to 3 s each with nothing in the log.
+- Stall lines are limited to one per kind per 10 s, with the number left out appended. `pacer.stalls`, `pacer.worstStallMs`, `pacer.sendFailures`, `pacer.skippedWindow` and `pacer.skippedBudget` are published (`pacer.skippedDuty` stays, as their sum).
+
+### Changed
+
+- **One send can no longer fill the occupancy meter.** A single send is charged at most 250 ms to the budget meter, the measured price and the burst bucket (`MAX_CHARGE_MS`). A 6 s `SRSP` stall used to hold every frame back for a second, make `avgSendMs` read 4x too high and fire a false "frame cap asks for N fps" warning. Ordinary sends (p90 238 ms) are charged in full. `worstSendMs` is still the real, uncapped time.
+
+### Notes
+
+- See `docs/PACING.md`, "Latency spikes and the occupancy meter".
+- `huelink-lib/` changed: restart zigbee2mqtt, hot reload will not pick it up. `huelink_version` shows 1.3.1 when it has.
+
 ## 1.3.0
 
 More controls in Home Assistant, picture presets, saturation, and a breaker that retries on its own. **Nothing moves on its own**: every default is the value it already was, saturation ships at 100 % (bit-identical to 1.2.0 output), and no preset is selected until someone picks one.

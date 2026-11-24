@@ -5,8 +5,9 @@
  *
  * This file is the edge: the z2m transport, the UDP listener and the MQTT
  * state. The byte encoding is in huelink-lib/huepack.mjs, the stream lifecycle in
- * huelink-lib/huestream.mjs, the power/mode decision in huelink-lib/arbiter.mjs, the effect
- * catalogue in huelink-lib/effects/.
+ * huelink-lib/huestream.mjs, the power/mode decision in huelink-lib/arbiter.mjs, the
+ * breaker's trip and retry ladder in huelink-lib/breaker.mjs, the HA entity table
+ * in huelink-lib/discovery.mjs, the effect catalogue in huelink-lib/effects/.
  *
  * Control is two things only: power, and exactly one mode (light / effect /
  * sync). "Off" is a RESET out of the stream and then a normal off, never a
@@ -19,12 +20,14 @@ import { statSync } from "node:fs";
 
 import { HueStream } from "./huelink-lib/huestream.mjs";
 import { Arbiter, FrameSource, MODE_EFFECT, MODE_LIGHT, MODE_OFF, MODE_SYNC, MODES } from "./huelink-lib/arbiter.mjs";
+import { Breaker } from "./huelink-lib/breaker.mjs";
+import { RETIRED, discoveryEntities } from "./huelink-lib/discovery.mjs";
 import { CONFIG, CONFIG_ERRORS, CONFIG_FILE, CONFIG_PATH, CONFIG_WARNINGS, loadConfig } from "./huelink-lib/config.mjs";
 import { EffectEngine, loadEffects } from "./huelink-lib/effects/index.mjs";
-import { SATURATION_PCT, clampSaturationPct, saturate } from "./huelink-lib/huepack.mjs";
+import { clampSaturationPct, saturate } from "./huelink-lib/huepack.mjs";
 import { t } from "./huelink-lib/i18n/index.mjs";
 import { toFinite } from "./huelink-lib/num.mjs";
-import { LIMITS, Pacer, TUNABLE } from "./huelink-lib/pacer.mjs";
+import { Pacer, TUNABLE } from "./huelink-lib/pacer.mjs";
 import { KNOB_KEYS, landed, match } from "./huelink-lib/presets.mjs";
 import { StallWatch, Throttle } from "./huelink-lib/stallwatch.mjs";
 import {
@@ -34,7 +37,6 @@ import {
     PRESETS,
     PRESET_PROBLEMS,
     SETTABLE_KEYS,
-    categoryOf,
 } from "./huelink-lib/huelink-ui.mjs";
 
 /**
@@ -53,7 +55,7 @@ import {
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.3.1";
+export const VERSION = "1.3.2";
 
 /** Knobs with a slider: the file only sets their startup value (a live reload would fight the slider). */
 const SLIDER_OWNED = new Set(["occupancyBudget", ...KNOBS.map((k) => k.knob)]);
@@ -114,15 +116,6 @@ const FAIL_BACKOFF_MS = [200, 1000, 3000];
 const STALL_LOG_EVERY_MS = 10_000;
 
 /**
- * How long a tripped breaker stays shut; then `tick` reopens it. A re-trip
- * with no frame through doubles the wait up to `TRIP_DWELL_MAX_MS`; a frame
- * resets it. No `lastSeenChanged` listener on purpose: a switched-off strip
- * is silent (observed: tripped for 2 h).
- */
-const TRIP_DWELL_MS = 300_000;
-const TRIP_DWELL_MAX_MS = 3_600_000;
-
-/**
  * How long a command handler waits for a tick to let go of the radio before it
  * carries out the new decision (see `settle`). Long enough to outlast an
  * ordinary frame, short enough that HA never notices: giving up here means
@@ -179,18 +172,6 @@ const BLACK_LEVEL = 16;
 const SELF_ECHO_MS = 2000;
 /** Ceiling on that record, so a stuck broker cannot grow it without end. */
 const SELF_ECHO_MAX = 16;
-
-/**
- * Entities that no longer exist in this model. An empty retained payload on the
- * discovery topic removes them from HA; without this the old standalone sync
- * switch would linger next to the mode select.
- */
-const RETIRED = [
-    ["switch", "sync"],
-    ["sensor", "sync_status"],
-    ["sensor", "source"],
-    ["sensor", "mode"],
-];
 
 /**
  * Modification time of the config file, or 0 when there is none.
@@ -299,19 +280,10 @@ export default class HueLink {
         this.ceilingReport = null;
         /** `tick()` stays quiet until this time (backoff pause). */
         this.retryAt = 0;
-        /** Mode the breaker tripped in, or `null`. While set, nothing is sent. */
-        this.tripped = null;
-        /**
-         * When it tripped, and the mode KEY it tripped in. `tripped` itself
-         * holds the translated label, which is the right thing to show a person
-         * and the wrong thing to re-arm from. Both only mean anything while
-         * `tripped` is set.
-         */
-        this.trippedAt = 0;
-        this.trippedMode = null;
-        /** Current backoff and trips since the last frame got through; see `TRIP_DWELL_MS`. */
-        this.tripDwellMs = TRIP_DWELL_MS;
-        this.tripStreak = 0;
+        /** Trip and retry ladder; while `breaker.tripped` is set, nothing is sent. */
+        this.breaker = new Breaker();
+        /** The trip sent its forced OFF and its state report has not come back yet. */
+        this.tripOffPending = false;
         /**
          * ARMED: the mode whose frames we are waiting for, or `null`. The strip
          * is off, but the choice still stands, so the first frame to arrive
@@ -696,8 +668,9 @@ export default class HueLink {
         // change command leaves in those states.
         // The dwell is checked on this tick rather than by a timer, which
         // would have to be cancelled in `resume`, `stop` and every reopen.
-        if (this.tripped) {
-            if (Date.now() - this.trippedAt >= this.tripDwellMs) await this.reopen();
+        // Once auto-retry has given up there is no dwell left to wait for.
+        if (this.breaker.tripped) {
+            if (this.breaker.dueForReopen(Date.now())) await this.reopen();
             return;
         }
         if (Date.now() < this.retryAt) return;
@@ -815,11 +788,13 @@ export default class HueLink {
                     this.noteFrameTimes(sendMs);
                     // It went through: the strip answers, so earlier failures
                     // were transient and the counter starts from zero. The
-                    // dwell ladder resets here only: an accepted frame is the
-                    // proof that the last reopen was worth it.
+                    // dwell ladder resets fully here only, and only after a run
+                    // of accepted frames: that is the proof that the last
+                    // reopen was worth it (see `RECOVERY_FRAMES`). An acked ON
+                    // only lifts a give-up (`Breaker.ackedOn`).
                     this.failures = 0;
-                    this.tripStreak = 0;
-                    this.tripDwellMs = TRIP_DWELL_MS;
+                    // Clear the "needs attention" alert now, not on some later publish.
+                    if (this.breaker.frameOk()) void this.publishState();
                 }
             } else {
                 // Nothing is expected to flow, so no frame is late.
@@ -884,6 +859,7 @@ export default class HueLink {
      */
     async onFailure(error) {
         this.failures++;
+        this.breaker.frameFailed();
         this.stall.failed(Date.now(), this.sendStartedAt || undefined);
         this.sendStartedAt = 0;
         if (this.failures < FAIL_LIMIT) {
@@ -903,13 +879,7 @@ export default class HueLink {
 
         const mode = this.arbiter.requested;
         const label = MODE_LABEL[mode] ?? mode;
-        this.tripped = label;
-        this.trippedAt = Date.now();
-        this.trippedMode = mode;
-        // Tripped again with nothing sent since the last reopen: double the
-        // wait. Cleared by a sent frame (`tick`) or a person (`resume`).
-        this.tripStreak++;
-        this.tripDwellMs = Math.min(TRIP_DWELL_MS * 2 ** (this.tripStreak - 1), TRIP_DWELL_MAX_MS);
+        this.breaker.trip(label, mode, Date.now());
         this.failures = 0;
         this.retryAt = 0;
         this.armed = null;
@@ -935,33 +905,31 @@ export default class HueLink {
         // command, not a black frame, which would leave HA showing "on".
         // Forced: the breaker always trips out of a stream, so any `OFF` the
         // strip is already reported to be in was one it ignored. See `light`.
-        if (reachable) await this.light("OFF", true);
+        // Set before the await: the echo can land while it is still pending.
+        this.tripOffPending = reachable;
+        if (reachable && !(await this.light("OFF", true))) this.tripOffPending = false;
         this.output = MODE_OFF;
 
         this.logger.error(
             `[huelink] ${t("log.tripped", { mode: label, limit: FAIL_LIMIT, error: error.message })}`,
         );
+        // Written here, once per trip, rather than by `tick`, which would need
+        // a flag to avoid repeating it on every call.
+        if (this.breaker.needsManualResume) {
+            this.logger.error(
+                `[huelink] ${t("log.autoRetryGaveUp", { mode: label, streak: this.breaker.tripStreak })}`,
+            );
+        }
         await this.publishState();
     }
 
-    /**
-     * Closes a tripped breaker, from an explicit command or from `reopen`.
-     *
-     * @param {boolean} [demanded]  a person asked: only then is the backoff
-     *   reset. A timer retry must keep climbing the ladder.
-     */
-    resume(demanded = false) {
-        if (!this.tripped) return;
-        this.logger.info(`[huelink] ${t("log.retrying", { mode: this.tripped })}`);
-        this.tripped = null;
-        this.trippedAt = 0;
-        this.trippedMode = null;
+    /** Closes a tripped breaker, from an explicit command or from `reopen`. The ladder is kept: see `Breaker.close`. */
+    resume() {
+        if (!this.breaker.tripped) return;
+        this.logger.info(`[huelink] ${t("log.retrying", { mode: this.breaker.tripped })}`);
+        this.breaker.close();
         this.failures = 0;
         this.retryAt = 0;
-        if (demanded) {
-            this.tripStreak = 0;
-            this.tripDwellMs = TRIP_DWELL_MS;
-        }
     }
 
     /**
@@ -973,10 +941,11 @@ export default class HueLink {
      * this every few ms.
      */
     async reopen() {
-        if (!this.tripped) return;
+        if (!this.breaker.tripped) return;
         // `resume()` clears `tripped` synchronously, so the repeated calls from
         // `tick` cannot overlap despite the `await` below.
-        const mode = this.trippedMode === MODE_SYNC || this.trippedMode === MODE_EFFECT ? this.trippedMode : null;
+        const { trippedMode } = this.breaker;
+        const mode = trippedMode === MODE_SYNC || trippedMode === MODE_EFFECT ? trippedMode : null;
         this.resume();
         this.armed = mode;
         await this.publishState();
@@ -1128,7 +1097,7 @@ export default class HueLink {
         // entitled to the radio than a frame is. Giving up here is cheap: the
         // tick applies the decision and publishes the correction as soon as
         // the pause is over (at most `FAIL_BACKOFF_MS`).
-        if (this.tripped || Date.now() < this.retryAt) return;
+        if (this.breaker.tripped || Date.now() < this.retryAt) return;
         const until = Date.now() + SETTLE_WAIT_MS;
         while (this.sending && Date.now() < until) await sleep(5);
         if (this.sending) return;
@@ -1176,12 +1145,23 @@ export default class HueLink {
             // anyone asking; that is why the echo is filtered out one level up
             // (`#wasSelfSent`) and why a state report that AGREES with the
             // power we hold stops in `#entityState` instead of calling this.
+            //
+            // A tripped strip is already off, but "off" from a person means
+            // "stop telling me it is broken": the trip is closed so the status
+            // reads Off and no timer re-arms it. The ladder is left alone, so
+            // a strip that is still dead climbs on from the same rung, and
+            // `breaker` keeps saying `gave_up` until it really recovers.
+            if (!on && this.breaker.tripped) {
+                this.breaker.close();
+                await this.publishState();
+                return;
+            }
             if (!this.armed) return;
             this.armed = null;
             await this.publishState();
             return;
         }
-        this.resume(true);
+        this.resume();
         // A direct action cancels arming: what was just pressed outranks what
         // the strip was waiting for. Without this, "on as a light" would jump
         // back to sync a moment later when the TV resumed.
@@ -1231,7 +1211,7 @@ export default class HueLink {
         // clear BOTH sources including the one we are switching to. Everything
         // else `setPower` does follows in the lines below anyway.
         this.arbiter.power = true;
-        this.resume(true);
+        this.resume();
         this.armed = null; // see `setPower`: a choice outranks waiting
         this.arbiter.request(mode);
         // The previous mode's frames must not survive the switch even by one
@@ -1584,6 +1564,17 @@ export default class HueLink {
         // cannot race. See docs/DESIGN.md.
         const value = String(payload?.state ?? "").toUpperCase();
         if (value !== "ON" && value !== "OFF") return;
+        // z2m reports a state only once the strip acked it, so an "ON" here,
+        // even the echo of our own, proves the strip is back on the network:
+        // that clears the give-up alert. It does not prove frames get through,
+        // so it buys one more try, not a fresh ladder (`Breaker.ackedOn`):
+        // every command turns the strip on, and a strip that acks that but
+        // fails frames must not be handed three more trips per command. Only
+        // "ON": every trip sends a forced "OFF".
+        if (value === "ON" && this.breaker.autoRetryExhausted) {
+            this.breaker.ackedOn();
+            await this.publishState();
+        }
         // Our own command coming back. Dropped whole, before the bookkeeping:
         // `light()` already wrote this very state into `stripState` when it
         // published, so there is nothing to learn here, and by the time a
@@ -1591,7 +1582,10 @@ export default class HueLink {
         // newer command it would overwrite with the older one. See
         // `#wasSelfState` for why "we sent this" cannot be inferred from the
         // power we hold.
-        if (this.#wasSelfState(value)) return;
+        if (this.#wasSelfState(value)) {
+            if (value === "OFF") this.tripOffPending = false;
+            return;
+        }
         // The strip itself reporting, so this is the best answer there is to
         // "what power is it in", whoever caused it: HA, a wall switch.
         this.stripState = value;
@@ -1601,6 +1595,19 @@ export default class HueLink {
         // Until `setPower` learned to cancel the arming on an unchanged power
         // this made no difference, as `setPower` returned immediately on the
         // same comparison.
+        //
+        // Except an "OFF" while tripped: a person (HA light, wall switch)
+        // saying off. Left here, the dwell would re-arm and the TV would
+        // relight a strip just switched off. Not the trip's own OFF, though:
+        // a trip means a jammed coordinator, so its echo can come back after
+        // SELF_ECHO_MS, and closing the trip on it would lose the re-arm.
+        if (value === "OFF" && this.breaker.tripped) {
+            if (this.tripOffPending) {
+                this.tripOffPending = false;
+                return;
+            }
+            return this.setPower(false);
+        }
         if ((value === "ON") === this.arbiter.power) return;
         await this.setPower(value === "ON");
     }
@@ -1614,7 +1621,8 @@ export default class HueLink {
         // Both reasons the strip went dark ON ITS OWN come first. Otherwise a
         // plain "off" would hide them, and the user would see a dark strip with
         // not a word about what happened.
-        if (this.tripped) return t("status.tripped", { mode: this.tripped });
+        if (this.breaker.needsManualResume) return t("status.trippedManual", { mode: this.breaker.tripped });
+        if (this.breaker.tripped) return t("status.tripped", { mode: this.breaker.tripped });
         if (this.armed === MODE_SYNC) return t("status.waitingTv");
         if (!this.arbiter.power) return t("status.off");
         if (this.output === MODE_EFFECT) return t("status.effect", { effect: this.effects.selected });
@@ -1757,6 +1765,10 @@ export default class HueLink {
                 // from outside.
                 armed: this.armed ? MODE_LABEL[this.armed] : null,
                 status: this.status(),
+                // The breaker as a fixed word for automations; `status` is
+                // the same fact translated for people. `gave_up` holds through
+                // an off or a manual try until a recovery is proven.
+                breaker: this.breaker.state,
                 effect: this.effects.selected,
                 effect_brightness: Math.round(this.effects.brightness * 100),
                 effect_speed: Math.round(this.effects.speed * 100),
@@ -1775,17 +1787,7 @@ export default class HueLink {
         );
     }
 
-    /**
-     * HA discovery: mode select, effect select, two knobs and the status. There
-     * is deliberately NO power switch here: power is the strip's own HA `light`
-     * entity, and a second switch beside it would mean two places to turn the
-     * thing off.
-     *
-     * Discovery rather than hand-written HA entities, because every other
-     * Zigbee device already arrives that way, and because the effect list comes
-     * from `effects.json`: a manual entity would make each new effect an edit
-     * in two places, and the HA half would fall behind.
-     */
+    /** HA discovery: topics and device here, the entity table in huelink-lib/discovery.mjs. */
     async publishDiscovery() {
         const base = this.settings.get().mqtt.base_topic;
         const prefix = this.settings.get().homeassistant?.discovery_topic ?? "homeassistant";
@@ -1808,252 +1810,6 @@ export default class HueLink {
         // reaches us, because the core subscribes to `<base>/#` and hands every
         // message to the event bus. See docs/DESIGN.md.
         const commandTopic = `${base}/${CONFIG.name}/command`;
-        /** A `number` slider entity: `[kind, id, payload]` like the literals below. */
-        const slider = (id, haKey, { value, command, limits, unit, icon, expert }) => [
-            "number",
-            id,
-            {
-                name: t(`ha.${haKey}`),
-                unique_id: `huelink_${CONFIG.name}_${id}`,
-                state_topic: stateTopic,
-                value_template: `{{ value_json.${value} }}`,
-                command_topic: commandTopic,
-                command_template: command,
-                min: limits.min,
-                max: limits.max,
-                step: limits.step,
-                ...(unit ? { unit_of_measurement: unit } : {}),
-                mode: "slider",
-                icon,
-                // Expert knobs (presets cover everyday use): off until enabled in HA.
-                ...(expert ? { enabled_by_default: false } : {}),
-                device,
-            },
-        ];
-
-        let entities = [
-            [
-                "select",
-                "mode",
-                {
-                    name: t("ha.mode"),
-                    unique_id: `huelink_${CONFIG.name}_mode_select`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.mode }}",
-                    command_topic: commandTopic,
-                    command_template: '{"mode": {{ value | tojson }}}',
-                    options: MODES.map((m) => MODE_LABEL[m]),
-                    icon: "mdi:tune-variant",
-                    device,
-                },
-            ],
-            [
-                // Beside the mode select. Moving any slider turns the state
-                // into "Custom", which must be an option because HA logs an
-                // error for a select state outside its options; choosing it
-                // does nothing.
-                "select",
-                "preset",
-                {
-                    name: t("ha.preset"),
-                    unique_id: `huelink_${CONFIG.name}_preset`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.preset }}",
-                    command_topic: commandTopic,
-                    command_template: '{"preset": {{ value | tojson }}}',
-                    options: PRESETS.map((p) => p.name),
-                    icon: "mdi:playlist-star",
-                    device,
-                },
-            ],
-            [
-                "select",
-                "effect",
-                {
-                    name: t("ha.effect"),
-                    unique_id: `huelink_${CONFIG.name}_effect`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.effect }}",
-                    command_topic: commandTopic,
-                    command_template: '{"effect": {{ value | tojson }}}',
-                    options: this.effectOptions,
-                    icon: "mdi:auto-fix",
-                    device,
-                },
-            ],
-            [
-                "number",
-                "effect_brightness",
-                {
-                    name: t("ha.effectBrightness"),
-                    unique_id: `huelink_${CONFIG.name}_effect_brightness`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.effect_brightness }}",
-                    command_topic: commandTopic,
-                    command_template: '{"effect_brightness": {{ value | int }}}',
-                    min: 1,
-                    max: 100,
-                    step: 1,
-                    unit_of_measurement: "%",
-                    mode: "slider",
-                    icon: "mdi:brightness-6",
-                    device,
-                },
-            ],
-            [
-                "number",
-                "effect_speed",
-                {
-                    name: t("ha.effectSpeed"),
-                    unique_id: `huelink_${CONFIG.name}_effect_speed`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.effect_speed }}",
-                    command_topic: commandTopic,
-                    command_template: '{"effect_speed": {{ value | int }}}',
-                    // 10-300 stays, and that is measured rather than assumed.
-                    // Speed drives the effect's phase, not the send rate, so
-                    // once the pace binds it saturates there: the bench shows
-                    // the same 23.3 % occupancy at 50 % and at 300 % speed.
-                    // Above ~50 % it buys no air time, only a different look.
-                    min: 10,
-                    max: 300,
-                    step: 5,
-                    unit_of_measurement: "%",
-                    mode: "slider",
-                    icon: "mdi:speedometer",
-                    device,
-                },
-            ],
-            [
-                "sensor",
-                "status",
-                {
-                    name: t("ha.status"),
-                    unique_id: `huelink_${CONFIG.name}_status`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.status }}",
-                    icon: "mdi:information-outline",
-                    device,
-                },
-            ],
-            [
-                "sensor",
-                "fps_real",
-                {
-                    name: t("ha.fpsReal"),
-                    unique_id: `huelink_${CONFIG.name}_fps_real`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.fps_real }}",
-                    unit_of_measurement: "fps",
-                    icon: "mdi:speedometer-medium",
-                    device,
-                },
-            ],
-            [
-                "number",
-                "fps",
-                {
-                    name: t("ha.fps"),
-                    unique_id: `huelink_${CONFIG.name}_fps`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.fps }}",
-                    command_topic: commandTopic,
-                    command_template: '{"fps": {{ value | int }}}',
-                    // Was 5-25. Anything above ~6 was decoration: at the measured
-                    // 51 ms per send even 7 fps needs 29 % occupancy, and 25 fps
-                    // would need 128 %, which cannot happen. The slider showed
-                    // numbers the hardware silently clipped; now it only shows
-                    // reachable ones. The floor of 2 is a deliberate way to hand
-                    // the coordinator back to the rest of the house. docs/PACING.md.
-                    //
-                    // The ceiling follows `maxFps` from the config rather than
-                    // the built-in 5, for the same reason the number was 5 in
-                    // the first place: a slider should only offer what this
-                    // installation can actually deliver, and on a dedicated
-                    // coordinator that is a different number. Read once, so a
-                    // change to it needs a z2m restart like the z2m-side
-                    // slider in huelink-lib/huelink-ui.mjs.
-                    min: Math.min(2, CONFIG.maxFps),
-                    max: CONFIG.maxFps,
-                    step: 1,
-                    unit_of_measurement: "fps",
-                    mode: "slider",
-                    icon: "mdi:filmstrip",
-                    device,
-                },
-            ],
-            [
-                "sensor",
-                "occupancy",
-                {
-                    // The one number that says whether Sync is hurting the rest
-                    // of the house: the share of time the coordinator spends on
-                    // strip frames. Above ~40 % other commands start queueing.
-                    name: t("ha.occupancy"),
-                    unique_id: `huelink_${CONFIG.name}_occupancy`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.pacer.occupancyPct }}",
-                    unit_of_measurement: "%",
-                    icon: "mdi:gauge",
-                    device,
-                },
-            ],
-            // The budget is what really limits fps; raising the cap alone
-            // changes nothing. The `fps_ceiling` sensor shows the net result.
-            slider("budget", "budget", {
-                value: "pacer.occupancyBudgetPct",
-                command: '{"occupancy_budget": {{ value | int }}}',
-                limits: LIMITS.occupancyBudgetPct,
-                unit: "%",
-                icon: "mdi:gauge",
-                // Takes coordinator time from every other Zigbee device; presets cover everyday use.
-                expert: true,
-            }),
-            [
-                "sensor",
-                "fps_ceiling",
-                {
-                    // Deliverable rate: frame cap, quota and air budget combined.
-                    name: t("ha.fpsCeiling"),
-                    unique_id: `huelink_${CONFIG.name}_fps_ceiling`,
-                    state_topic: stateTopic,
-                    value_template: "{{ value_json.pacer.fpsCeiling }}",
-                    unit_of_measurement: "fps",
-                    icon: "mdi:arrow-collapse-up",
-                    device,
-                },
-            ],
-            // Built from `KNOBS`, the table that also wires the commands.
-            ...KNOBS.map(({ knob, command, i18n, unit, icon }) =>
-                slider(command, i18n, {
-                    value: `pacer.${knob}`,
-                    // `float`: `smoothingFactor` steps in 0.05, `int` would round it away.
-                    command: `{"${command}": {{ value | float }}}`,
-                    limits: LIMITS[knob],
-                    unit,
-                    icon,
-                    expert: true,
-                }),
-            ),
-            // Costs the coordinator nothing (changes colours, not frame count); 100 is neutral.
-            slider("saturation", "saturation", {
-                value: "saturation",
-                command: '{"saturation": {{ value | int }}}',
-                limits: SATURATION_PCT,
-                unit: "%",
-                icon: "mdi:palette",
-            }),
-        ];
-
-        // With no effects loaded, a `select` with an empty option list is just
-        // an error in the HA log, so the entity is simply not published.
-        if (!this.effectOptions.length) {
-            entities = entities.filter(([kind, id]) => !(kind === "select" && id === "effect"));
-        }
-        // Same for presets: an unreadable `presets.json` leaves only "Custom".
-        if (!PRESETS.length) {
-            entities = entities.filter(([kind, id]) => !(kind === "select" && id === "preset"));
-        }
 
         for (const [kind, id] of RETIRED) {
             await this.mqtt.publish(`${kind}/huelink_${CONFIG.name}/${id}/config`, "", {
@@ -2062,17 +1818,12 @@ export default class HueLink {
             });
         }
 
+        const entities = discoveryEntities({ stateTopic, commandTopic, device, effectOptions: this.effectOptions });
         for (const [kind, id, cfg] of entities) {
-            // Entity category folds the entity under Configuration/Diagnostic
-            // in HA; same table as the z2m device page. `status` has none on
-            // purpose: it is where the breaker state shows. `categoryOf`
-            // throws on unknown ids, so new entities must be categorised.
-            const category = categoryOf(id);
-            await this.mqtt.publish(
-                `${kind}/huelink_${CONFIG.name}/${id}/config`,
-                JSON.stringify(category ? { ...cfg, entity_category: category } : cfg),
-                { baseTopic: prefix, clientOptions: { retain: true } },
-            );
+            await this.mqtt.publish(`${kind}/huelink_${CONFIG.name}/${id}/config`, JSON.stringify(cfg), {
+                baseTopic: prefix,
+                clientOptions: { retain: true },
+            });
         }
     }
 

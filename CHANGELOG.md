@@ -4,6 +4,28 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.3.2
+
+A strip that is really gone is no longer retried for ever. Endless retries against an unreachable strip can jam the whole Zigbee network.
+
+### Changed
+
+- **Auto-reopen stops after 3 trips in a row without a recovery** (`MAX_AUTO_TRIP_STREAK`), i.e. after two automatic retries. A retry is only used up when a source actually sends frames and they fail; a reopen with the TV off costs nothing. The breaker then stays shut until a person resumes it (power on or any mode command).
+- **A recovery now takes 20 accepted frames in a row** (`RECOVERY_FRAMES`), not one. A strip that takes a single frame after each reopen and then fails again no longer resets the ladder and is no longer retried for ever.
+- **A command (power on, any mode) no longer resets the retry ladder; only a recovery does.** An automation that re-sends the mode looks the same as a person, and re-sending it faster than the dwell must not keep a dead strip from ever giving up. After the give-up a command therefore buys one try, not a fresh ladder.
+- **Power off while tripped closes the trip**: the status reads Off instead of "not responding" for as long as the strip stays off. The ladder is kept, so a still-dead strip gives up on its next trip.
+- The 1 h dwell cap (`TRIP_DWELL_MAX_MS`) is gone: with the retries bounded it could no longer be reached.
+- The give-up is logged once (`log.autoRetryGaveUp`) and shown in the HA status (`status.trippedManual`), instead of the ordinary "not responding" text.
+- Internal: the breaker's trip and retry ladder moved to `huelink-lib/breaker.mjs`, the HA discovery entity table to `huelink-lib/discovery.mjs`. `huelink.mjs` keeps the orchestration and the publishing.
+
+### Added
+
+- `breaker` in the state (`closed` / `tripped` / `gave_up`) and an HA binary sensor "Strip needs attention" (`problem`, diagnostic) that is on after the give-up. Automations can use it instead of matching the translated status text. It stays on through a power off or a manual try and clears only after a proven recovery (20 accepted frames, or the strip acking a power on), so an "everything off" automation cannot hide a dead strip. It is not persisted: a z2m restart clears it.
+
+### Notes
+
+- `huelink-lib/` changed (i18n, two new modules): restart zigbee2mqtt. `huelink_version` shows 1.3.2 when it has.
+
 ## 1.3.1
 
 A strip that freezes for a moment and then catches up now says so, and says why. The stall watch only observes and logs; the one behaviour change is the per-send charge cap under "Changed".

@@ -33,6 +33,7 @@
 
 
   "status.tripped": "{mode} stopped: the strip is not responding",
+  "status.trippedManual": "{mode} stopped: the strip is not responding, auto-retry gave up. Turn the strip on or pick a mode to resume",
   "status.waitingTv": "Waiting for TV",
   "status.off": "Off",
   "status.effect": "Effect: {effect}",
@@ -75,6 +76,7 @@
   "ha.effectBrightness": "Effect brightness",
   "ha.effectSpeed": "Effect speed",
   "ha.status": "Status",
+  "ha.breaker": "Strip needs attention",
   "ha.fpsReal": "Frames per second",
   "ha.fps": "Sync frame cap",
   "ha.occupancy": "Coordinator load",
@@ -119,6 +121,7 @@
   "log.blackGated": "the sync source has been black for {seconds} s: treating it as no signal, the strip goes off until a lit frame arrives",
   "log.blackEnded": "the sync source has light in it again: sync resumes",
   "log.tripped": "{mode} stopped, strip turned off: the strip is not responding ({limit} frames in a row, last error: {error})",
+  "log.autoRetryGaveUp": "{mode} stopped {streak} times in a row without a recovery: auto-retry is giving up, a manual resume is needed",
   "log.retrying": "trying again (was stopped: {mode})",
   "log.lightFailed": "strip '{state}' failed: {error}",
   "log.unknownMode": "unknown mode '{value}', ignored",

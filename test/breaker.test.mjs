@@ -10,6 +10,7 @@
  * Run: `npm test` or `node --test test/breaker.test.mjs`.
  */
 import assert from "node:assert";
+import { afterEach, test } from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +24,7 @@ const { CMD_FRAME } = await import("../extension/huelink-lib/huepack.mjs");
 const { CONFIG } = await import("../extension/huelink-lib/config.mjs");
 const { t } = await import("../extension/huelink-lib/i18n/index.mjs");
 const { MODE_LABEL } = await import("../extension/huelink-lib/huelink-ui.mjs");
+const { MAX_AUTO_TRIP_STREAK } = await import("../extension/huelink-lib/breaker.mjs");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -42,7 +44,7 @@ const logLine = (key) =>
 async function waitForTrip(link, limitMs = 20000) {
     const until = Date.now() + limitMs;
     while (Date.now() < until) {
-        if (link.tripped) return true;
+        if (link.breaker.tripped) return true;
         await sleep(100);
     }
     return false;
@@ -253,7 +255,7 @@ async function testHealthyStreamUnaffected() {
     clearInterval(fed);
     await h.link.stop();
 
-    assert.strictEqual(h.link.tripped, null, "a healthy stream must not trip the breaker");
+    assert.strictEqual(h.link.breaker.tripped, null, "a healthy stream must not trip the breaker");
     assert.strictEqual(h.log.error.length, 0, `a healthy stream logs no errors, got: ${h.log.error[0]}`);
     // The new warnings must not cry wolf: no stall, slow-send or failure lines.
     assert.deepStrictEqual(stallWarnings(h.log), [], "a healthy stream must not log stall warnings");
@@ -291,7 +293,7 @@ async function testAFailedFrameIsNotSilent() {
     clearInterval(fed);
     await h.link.stop();
 
-    assert.strictEqual(h.link.tripped, null, "one failed frame must not trip the breaker");
+    assert.strictEqual(h.link.breaker.tripped, null, "one failed frame must not trip the breaker");
     const lines = h.log.warning.filter((m) => logLine("log.frameFailed").test(m));
     assert.strictEqual(lines.length, 1, `expected exactly one failed-frame warning, got ${lines.length}`);
     assert.ok(lines[0].includes("MAC_NO_ACK test-marker"), `the line must carry the error text: ${lines[0]}`);
@@ -317,7 +319,7 @@ async function testASlowFrameIsReported() {
     clearInterval(fed);
     await h.link.stop();
 
-    assert.strictEqual(h.link.tripped, null);
+    assert.strictEqual(h.link.breaker.tripped, null);
     // Throttled: one line even though the lockout after the slow send is a second stall.
     const stalled = h.log.warning.filter((m) => logLine("log.stalled").test(m));
     assert.strictEqual(stalled.length, 1, `expected one stall line, got ${stalled.length}`);
@@ -342,7 +344,7 @@ async function testResumeOnExplicitCommand() {
     const before = h.sends.length;
     h.revive(); // the strip comes back on the network
     await h.link.setMode(MODE_LABEL.sync); // the user picks it again
-    assert.strictEqual(h.link.tripped, null, "an explicit command must close the breaker");
+    assert.strictEqual(h.link.breaker.tripped, null, "an explicit command must close the breaker");
     await sleep(800);
     clearInterval(fed);
     await h.link.stop();
@@ -366,16 +368,16 @@ async function testSilentStripStillRecovers() {
     fed = feed(h.link);
     await sleep(300);
     clearInterval(fed);
-    assert.ok(h.link.tripped, "inside the dwell the breaker stays shut");
+    assert.ok(h.link.breaker.tripped, "inside the dwell the breaker stays shut");
     assert.strictEqual(h.sends.length, before, "and nothing goes out on the air");
 
     // Past the dwell.
-    h.link.trippedAt -= h.link.tripDwellMs + 1000;
+    h.link.breaker.trippedAt -= h.link.breaker.tripDwellMs + 1000;
     fed = feed(h.link);
     await sleep(1200);
     clearInterval(fed);
     await h.link.stop();
-    assert.strictEqual(h.link.tripped, null, "past the dwell the breaker must reopen on its own");
+    assert.strictEqual(h.link.breaker.tripped, null, "past the dwell the breaker must reopen on its own");
     assert.ok(
         h.sends.length > before + 3,
         `frames must flow again without the strip ever speaking, got ${h.sends.length - before}`,
@@ -394,24 +396,174 @@ async function testASilentDeadStripIsNotHammered() {
     await h.link.setMode(MODE_LABEL.sync);
     const fed = feed(h.link);
     assert.ok(await waitForTrip(h.link), "the breaker should have tripped");
-    const first = h.link.tripDwellMs;
+    const first = h.link.breaker.tripDwellMs;
 
     // Still dead, still silent. Jump the dwell: it reopens, tries, and trips
     // again - and the next wait has to be longer than the one before it.
     // `tripped` itself never looks cleared from out here, so the RE-trip is
     // recognised by a fresh timestamp rather than by the flag.
     const mark = Date.now();
-    h.link.trippedAt -= first + 1000;
+    h.link.breaker.trippedAt -= first + 1000;
     const until = mark + 25000;
-    while (Date.now() < until && !(h.link.tripped && h.link.trippedAt >= mark)) await sleep(100);
-    assert.ok(h.link.tripped && h.link.trippedAt >= mark, "it must trip again on a dead strip");
+    while (Date.now() < until && !(h.link.breaker.tripped && h.link.breaker.trippedAt >= mark)) await sleep(100);
+    assert.ok(h.link.breaker.tripped && h.link.breaker.trippedAt >= mark, "it must trip again on a dead strip");
     clearInterval(fed);
     await h.link.stop();
     assert.ok(
-        h.link.tripDwellMs > first,
-        `a fruitless retry must widen the wait, got ${h.link.tripDwellMs} after ${first}`,
+        h.link.breaker.tripDwellMs > first,
+        `a fruitless retry must widen the wait, got ${h.link.breaker.tripDwellMs} after ${first}`,
     );
-    console.log(`  dead strip -> dwell grows ${first} ms -> ${h.link.tripDwellMs} ms`);
+    console.log(`  dead strip -> dwell grows ${first} ms -> ${h.link.breaker.tripDwellMs} ms`);
+}
+
+/** A dead strip in sync, driven to the third trip in a row: auto-retry has given up. */
+async function gaveUp() {
+    const h = harness({ failing: true });
+    await h.link.start();
+    await h.link.setMode(MODE_LABEL.sync);
+    // Two fruitless trips already behind it; the next one is the third.
+    h.link.breaker.tripStreak = MAX_AUTO_TRIP_STREAK - 1;
+    const fed = feed(h.link);
+    assert.ok(await waitForTrip(h.link), "the breaker should have tripped");
+    clearInterval(fed);
+    assert.ok(h.link.breaker.needsManualResume, "the third trip in a row must end the auto-retries");
+    return h;
+}
+
+async function testAutoRetryGivesUpOnAGoneStrip() {
+    // A strip that is really gone must not be retried on a timer for ever:
+    // after MAX_AUTO_TRIP_STREAK fruitless trips only a person reopens it.
+    const h = await gaveUp();
+    let fed;
+    const lines = h.log.error.filter((m) => logLine("log.autoRetryGaveUp").test(m));
+    assert.strictEqual(lines.length, 1, `expected 1 give-up line, got ${lines.length}`);
+    assert.strictEqual(
+        lastState(h.published).status,
+        t("status.trippedManual", { mode: MODE_LABEL.sync }),
+        "the status must say a person has to act",
+    );
+    assert.strictEqual(lastState(h.published).breaker, "gave_up", "and the fixed word automations read");
+
+    // Far past any dwell, with the strip back and frames on offer: still shut.
+    h.revive();
+    h.link.breaker.trippedAt -= 10 * 3_600_000;
+    const before = h.sends.length;
+    fed = feed(h.link);
+    await sleep(500);
+    clearInterval(fed);
+    assert.ok(h.link.breaker.tripped, "no timer may reopen it any more");
+    assert.strictEqual(h.sends.length, before, "and nothing goes out on the air");
+    assert.strictEqual(
+        h.log.error.filter((m) => logLine("log.autoRetryGaveUp").test(m)).length,
+        1,
+        "the give-up line is written once, not on every tick",
+    );
+
+    // A person asks: one more try, not the whole ladder; frames flow.
+    await h.link.setMode(MODE_LABEL.sync);
+    assert.strictEqual(h.link.breaker.tripped, null, "a demanded resume reopens it");
+    assert.strictEqual(h.link.breaker.tripStreak, MAX_AUTO_TRIP_STREAK, "with one try left, not a fresh ladder");
+    assert.strictEqual(lastState(h.published).breaker, "gave_up", "the alert holds until a recovery is proven");
+    fed = feed(h.link);
+    // A run of accepted frames is the proof of recovery that resets the ladder.
+    const until = Date.now() + 10000;
+    while (Date.now() < until && h.link.breaker.tripStreak !== 0) await sleep(50);
+    clearInterval(fed);
+    await h.link.stop();
+    assert.ok(h.sends.length > before + 3, "frames must flow again after the manual resume");
+    assert.strictEqual(h.link.breaker.tripStreak, 0, "a sustained recovery puts the ladder back to the start");
+    assert.strictEqual(lastState(h.published).breaker, "closed", "and clears the alert");
+    console.log("  gone strip -> auto-retry stops, manual resume works");
+}
+
+async function testAManualResumeOnAStillDeadStripGivesUpAtOnce() {
+    // An automation re-sending the mode every few minutes looks exactly like a
+    // person. After a give-up it must buy ONE try, or it restarts the hammering.
+    const h = await gaveUp();
+
+    // Starting the stream on a dead strip throws; that is the try being spent.
+    await h.link.setMode(MODE_LABEL.sync).catch(() => {});
+    const fed = feed(h.link);
+    assert.ok(await waitForTrip(h.link), "a still-dead strip trips again");
+    clearInterval(fed);
+    await h.link.stop();
+    assert.ok(h.link.breaker.needsManualResume, "and gives up straight away, without a fresh ladder");
+    console.log("  manual resume on a dead strip -> one try, then give-up again");
+}
+
+async function testOffClosesTheTripButKeepsTheGiveUp() {
+    // "Off" from a person means "stop telling me it is broken". The status must
+    // read Off, but the ladder stays: a still-dead strip gives up on its next
+    // trip, and the "needs attention" alert stays on until it really recovers.
+    const h = await gaveUp();
+
+    await h.link.setPower(false);
+    await h.link.stop();
+    assert.strictEqual(h.link.breaker.tripped, null, "off closes the trip");
+    const state = lastState(h.published);
+    assert.strictEqual(state.status, t("status.off"), "and the status says Off");
+    assert.strictEqual(state.breaker, "gave_up", "but the alert stays: the strip is still dead");
+    assert.strictEqual(h.link.breaker.tripStreak, MAX_AUTO_TRIP_STREAK, "and the ladder is not reset by an off");
+    console.log("  off after a give-up -> status Off, alert and ladder kept");
+}
+
+async function testAnOffFromTheLightEntityClosesTheTrip() {
+    // Power is the strip's own HA light: its "off" arrives as a state report,
+    // not a HueLink command, and power is already false after a trip. With
+    // the echo: z2m reports the trip's own OFF first, as it really does.
+    const h = harness({ failing: true, echo: true });
+    await h.link.start();
+    await h.link.setMode(MODE_LABEL.sync);
+    const fed = feed(h.link);
+    assert.ok(await waitForTrip(h.link), "the breaker should have tripped");
+    clearInterval(fed);
+    await sleep(2100); // past SELF_ECHO_MS: this OFF is a person, not the trip's own echo
+
+    await h.link.onEntityState({ entity: { name: CONFIG.device }, message: { state: "OFF" }, payload: { state: "OFF" } });
+    await h.link.stop();
+    assert.strictEqual(h.link.breaker.tripped, null, "an off from the light entity closes the trip");
+    assert.strictEqual(lastState(h.published).status, t("status.off"), "and the status says Off");
+    console.log("  tripped -> off from the HA light -> trip closed, no re-arm");
+}
+
+async function testAnAckedOnClearsAGiveUp() {
+    // After a give-up the user turns the strip on as a light: no frames ever
+    // flow, but z2m's state report is the strip's ack, and that is proof of life.
+    const h = await gaveUp();
+    const report = (state) =>
+        h.link.onEntityState({ entity: { name: CONFIG.device }, message: { state }, payload: { state } });
+
+    await report("OFF"); // the trip's own forced off, acked: the strip may still fail frames
+    assert.strictEqual(h.link.breaker.state, "gave_up", "an acked OFF is no recovery");
+
+    await report("ON");
+    await h.link.stop();
+    assert.strictEqual(h.link.breaker.state, "closed", "an acked ON clears the give-up");
+    assert.strictEqual(lastState(h.published).breaker, "closed", "and clears the alert");
+    assert.strictEqual(h.link.breaker.tripStreak, MAX_AUTO_TRIP_STREAK - 1, "but buys one try, not a fresh ladder");
+    console.log("  give-up -> strip acks ON -> alert cleared, one try left");
+}
+
+async function testALateTripOffEchoKeepsTheTrip() {
+    // A trip means a jammed coordinator, so the report of the trip's own
+    // forced OFF can come back after SELF_ECHO_MS. It is still our echo.
+    const h = harness({ failing: true });
+    await h.link.start();
+    h.link.stream.stop = async () => {}; // the strip answers the RESET, so the trip sends its OFF
+    await h.link.setMode(MODE_LABEL.sync);
+    const fed = feed(h.link);
+    assert.ok(await waitForTrip(h.link), "the breaker should have tripped");
+    clearInterval(fed);
+    await sleep(2100);
+    const report = () =>
+        h.link.onEntityState({ entity: { name: CONFIG.device }, message: { state: "OFF" }, payload: { state: "OFF" } });
+
+    await report(); // late echo of the trip's OFF
+    assert.ok(h.link.breaker.tripped, "a late echo of the trip's own OFF must not close the trip");
+    await report(); // now a person
+    await h.link.stop();
+    assert.strictEqual(h.link.breaker.tripped, null, "a person's OFF after it still closes the trip");
+    console.log("  tripped -> late echo of own OFF ignored -> person's OFF closes the trip");
 }
 
 async function testBackoffRecovers() {
@@ -431,7 +583,7 @@ async function testBackoffRecovers() {
     await sleep(2000);
     clearInterval(fed);
     await h.link.stop();
-    assert.strictEqual(h.link.tripped, null, "two failures must not trip the breaker");
+    assert.strictEqual(h.link.breaker.tripped, null, "two failures must not trip the breaker");
     assert.strictEqual(h.link.failures, 0, "a successful frame must reset the counter");
     console.log("  2 failures -> backoff -> recovery, breaker intact");
 }
@@ -633,7 +785,7 @@ async function testBackoffHoldsOffCommandsToo() {
     // for reasons that have nothing to do with it.
     h.link.failures = 1;
     h.link.retryAt = Date.now() + 5000;
-    assert.strictEqual(h.link.tripped, null, "the backoff window is NOT a trip, which is the whole point");
+    assert.strictEqual(h.link.breaker.tripped, null, "the backoff window is NOT a trip, which is the whole point");
 
     const sendsBefore = h.sends.length;
     const lightsBefore = lightCommands(h.published).length;
@@ -998,6 +1150,12 @@ const tests = [
     ["an explicit command resumes", testResumeOnExplicitCommand],
     ["a silent strip still recovers", testSilentStripStillRecovers],
     ["a silent dead strip is not hammered", testASilentDeadStripIsNotHammered],
+    ["auto-retry gives up on a gone strip", testAutoRetryGivesUpOnAGoneStrip],
+    ["a manual resume on a still-dead strip gives up at once", testAManualResumeOnAStillDeadStripGivesUpAtOnce],
+    ["off closes the trip, the give-up stays", testOffClosesTheTripButKeepsTheGiveUp],
+    ["an off from the light entity closes the trip", testAnOffFromTheLightEntityClosesTheTrip],
+    ["an acked ON clears a give-up", testAnAckedOnClearsAGiveUp],
+    ["a late echo of the trip's own OFF keeps the trip", testALateTripOffEchoKeepsTheTrip],
     ["backoff recovers", testBackoffRecovers],
     ["source went quiet -> strip switches off", testSourceSilenceTurnsStripOff],
     ["an armed strip lights itself", testArmedRelightsItself],
@@ -1013,17 +1171,8 @@ const tests = [
     ["commands are invisible to the core router", testCommandTopicIsInvisibleToTheCore],
 ];
 
-let failed = 0;
-for (const [name, fn] of tests) {
-    try {
-        await fn();
-        console.log(`ok  ${name}`);
-    } catch (e) {
-        failed++;
-        console.log(`FAIL ${name}: ${e.message}`);
-    } finally {
-        for (const l of live.splice(0)) await l.stop().catch(() => {});
-    }
-}
-console.log(failed ? `\n${failed} test(s) failed` : "\nall tests passed");
-process.exit(failed ? 1 : 0);
+// node:test, not a hand-rolled loop: `node --test` then reports which case failed and why.
+afterEach(async () => {
+    for (const l of live.splice(0)) await l.stop().catch(() => {});
+});
+for (const [name, fn] of tests) test(name, fn);

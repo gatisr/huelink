@@ -85,7 +85,7 @@ A healthy start logs, in order: settings read, effects loaded, startup reset sen
 |---|---|
 | Main | Mode, Picture preset, Effect, Effect speed, Status |
 | Configuration | Frame cap, Air budget, Fade length, Scene cut threshold / fade / per second, Colour saturation, Effect brightness |
-| Diagnostic | Frames per second, Coordinator load, Deliverable frame rate |
+| Diagnostic | Frames per second, Coordinator load, Deliverable frame rate, Strip needs attention |
 
 - Status is a main control: it is the only way to tell a strip that is dark on purpose from one that stopped answering.
 - Power is the strip's own `light` entity. There is no HueLink power switch.
@@ -262,13 +262,15 @@ stateDiagram-v2
     Active --> Armed: source silent (TTL)
     Armed --> Active: frames return
     Active --> Tripped: consecutive send failures
-    Tripped --> Armed: dwell elapsed (retry)
+    Tripped --> Armed: dwell elapsed (retry, at most twice)
     Tripped --> Active: person sends a command
+    Tripped --> GaveUp: third trip in a row
+    GaveUp --> Active: person sends a command (one try)
     Armed --> Active: person sends a command
 ```
 
 - **Armed:** the source went quiet but your choice stands; the strip is off and relights when frames come back. Nothing is wrong.
-- **Tripped:** the strip stopped answering and the circuit breaker opened (a failed frame can hold the coordinator for up to 6 s, so a few in a row stall the whole network). After a dwell (5 min, doubling on each repeat up to 1 h, reset by one frame through or by a command) HueLink retries by re-**arming**, not relighting.
+- **Tripped:** the strip stopped answering and the circuit breaker opened (a failed frame can hold the coordinator for up to 6 s, so a few in a row stall the whole network). After a dwell (5 min, then 10 min) HueLink retries by re-**arming**, not relighting. After the third trip in a row (two automatic retries) it stops retrying and waits for you: turn the strip on or pick a mode. The "Strip needs attention" binary sensor turns on then, for an HA notification, and stays on until the strip proves it is back: it confirms a power on, or takes frames again. The breaker is not persisted: a zigbee2mqtt restart clears the sensor and starts the retries over.
 
 ---
 
@@ -279,7 +281,7 @@ stateDiagram-v2
 | No `huelink_*` fields on the device page | Converter not loaded. `huelink-exposes.mjs` must be in `external_converters/` with `external_extensions/huelink-lib/` beside it in the same data directory. Look for `huelink-exposes` in the log; a failed load renames it `.invalid` (light control keeps working). |
 | Strip ignores everything, no `[huelink]` log lines | Extension did not start: files not in `external_extensions/`, or `device` does not match a `friendly_name`. |
 | Mode is Sync, nothing happens | Sync with no frames is `off` by design. Check: Hyperion capture running; controller is `udpraw` to the z2m host and right port; UDP port published in Docker; `tools/udpdump.py` sees 21-byte datagrams. |
-| Dark and unsure why | Read `huelink_status`. **armed** = waiting for frames, normal. **tripped** (`"<mode> stopped: strip not answering"`) = breaker open; it retries itself, or pick a mode / toggle power to retry now. |
+| Dark and unsure why | Read `huelink_status`. **armed** = waiting for frames, normal. **tripped** (`"<mode> stopped: the strip is not responding"`) = breaker open; it retries itself, or pick a mode / turn power on to retry now. If the status adds "auto-retry gave up", it no longer retries: turn power on or pick a mode. |
 | Sync freezes, then catches up; log says `the picture reached the strip N ms late` | Each line names where the time went (frame in flight, pause after a failed frame, air budget, frame quota). The `frame send failed` line just before it carries the real error. See [docs/PACING.md](docs/PACING.md), "Latency spikes and the occupancy meter". |
 | `fps_real` below `fps` | Normal: the pacer trims frames by budget and delta suppression. High `dropped` + low `fps_real` = suppression working; low `dropped` + low `fps_real` = sends are failing. See [docs/PACING.md](docs/PACING.md). |
 | Edited a file under `huelink-lib/`, nothing changed | z2m reloads only the top-level file; `huelink-lib/` stays cached until a process restart. Confirm with `huelink_version`. |

@@ -33,6 +33,7 @@
 
 
   "status.tripped": "{mode} apturēts: lente neatbild",
+  "status.trippedManual": "{mode} apturēts: lente neatbild, automātiskā atkārtošana pārtraukta. Ieslēdz lenti vai izvēlies režīmu, lai atsāktu",
   "status.waitingTv": "Gaida TV",
   "status.off": "Izslēgta",
   "status.effect": "Efekts: {effect}",
@@ -75,6 +76,7 @@
   "ha.effectBrightness": "Efekta spilgtums",
   "ha.effectSpeed": "Efekta ātrums",
   "ha.status": "Statuss",
+  "ha.breaker": "Lentei vajag uzmanību",
   "ha.fpsReal": "Kadri sekundē",
   "ha.fps": "Sync kadru griests",
   "ha.occupancy": "Koordinatora noslodze",
@@ -119,6 +121,7 @@
   "log.blackGated": "sync avots ir melns jau {seconds} s: uzskatām, ka signāla nav, lente nodziest līdz pirmajam gaišajam kadram",
   "log.blackEnded": "sync avotā atkal ir gaisma: sinhronizācija atsākas",
   "log.tripped": "{mode} apturēts, lente izslēgta: lente neatbild ({limit} kadri pēc kārtas, pēdējā kļūda: {error})",
+  "log.autoRetryGaveUp": "{mode} apturēts {streak}. reizi pēc kārtas bez atgūšanās: automātiskā atkārtošana pārtraukta, jāatsāk manuāli",
   "log.retrying": "mēģinām vēlreiz (bija apturēts: {mode})",
   "log.lightFailed": "lentes '{state}' neizdevās: {error}",
   "log.unknownMode": "nezināms režīms '{value}', ignorēts",

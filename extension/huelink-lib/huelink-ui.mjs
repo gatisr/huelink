@@ -57,7 +57,7 @@ export const CONFIGURATION = [
 ];
 
 /** Readings; read-only entities cannot be `config` (HA drops the whole discovery message). */
-export const DIAGNOSTIC = ["version", "fps_real", "dropped", "occupancy", "fps_ceiling"];
+export const DIAGNOSTIC = ["version", "fps_real", "dropped", "occupancy", "fps_ceiling", "breaker"];
 
 const CATEGORY = new Map([
     ...MAIN.map((name) => [name, undefined]),

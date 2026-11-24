@@ -12,7 +12,9 @@ The alternative was a bridge emulator. Bifrost is roughly 27k lines of Rust, and
 
 | File | Responsibility |
 | --- | --- |
-| `extension/huelink.mjs` | The z2m extension: lifecycle, MQTT, HA discovery, the tick loop |
+| `extension/huelink.mjs` | The z2m extension: lifecycle, MQTT, publishing HA discovery, the tick loop |
+| `huelink-lib/breaker.mjs` | Circuit breaker state: trip, retry ladder, give-up. No I/O |
+| `huelink-lib/discovery.mjs` | The HA discovery entity table. No I/O |
 | `huelink-lib/huepack.mjs` | Pure frame encoding. No I/O, no state. See [PROTOCOL.md](PROTOCOL.md) |
 | `huelink-lib/huestream.mjs` | Stream lifecycle: start, frame, reset. Owns the Zigbee send |
 | `huelink-lib/arbiter.mjs` | Decides what the strip should be doing right now |
@@ -65,9 +67,9 @@ The reset is retried until it succeeds, and the state is not declared off any ea
 Two different kinds of "not transmitting right now", and conflating them was a real bug.
 
 - **armed** — the source went quiet but the user's selection still stands. The strip is dark; incoming frames re-light it with no command. Example: Sync is selected, the TV is paused, Hyperion stops sending. Nothing is wrong.
-- **tripped** — the strip itself stopped answering. The circuit breaker opened after `FAIL_LIMIT` consecutive send failures, with backoff `FAIL_BACKOFF_MS = [200, 1000, 3000]`. Only an explicit command resumes it; frames alone will not, because frames are exactly what was failing.
+- **tripped** — the strip itself stopped answering. The circuit breaker opened after `FAIL_LIMIT` consecutive send failures, with backoff `FAIL_BACKOFF_MS = [200, 1000, 3000]`. Frames alone do not resume it, because frames are exactly what was failing. An explicit command (power on, any mode) resumes it at once; otherwise `tick` reopens it after a dwell (`TRIP_DWELL_MS`, doubling per fruitless re-trip). A reopen only re-arms, so a retry is spent only when frames actually flow and fail. After `MAX_AUTO_TRIP_STREAK` trips in a row without a recovery (`RECOVERY_FRAMES` accepted frames in a row), the timed reopen stops and only a command resumes it: a gone strip retried for ever can jam the whole network. A command never resets the ladder, only a recovery does, because an automation re-sending the mode cannot be told apart from a person; after the give-up a command is therefore one try, not a fresh ladder. Power off closes the trip without resetting the ladder. `breaker` in the state (`closed` / `tripped` / `gave_up`) carries the same fact untranslated; `gave_up` follows the ladder, not the trip, so it survives an off or a manual try and clears only on a proven recovery: `RECOVERY_FRAMES`, or a state report of "ON" from the strip, which z2m sends only once the strip has acked it. An acked "OFF" does not count, because every trip sends one and a strip can ack it while still failing frames.
 
-The distinction is visible from outside: `huelink_status` shows `"<mode> stopped: strip not answering"` when tripped. Without that line, a deliberately dark strip and an unreachable strip look identical.
+The distinction is visible from outside: `huelink_status` shows `"<mode> stopped: the strip is not responding"` when tripped, with "auto-retry gave up" appended once only a command will resume it. Without that line, a deliberately dark strip and an unreachable strip look identical.
 
 The breaker exists because a failed Entertainment frame consumes the full coordinator SRSP window (up to 6 s). Five of those in a row and the whole Zigbee network stops responding, not just the strip.
 

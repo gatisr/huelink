@@ -167,7 +167,7 @@ Each tick:
 7. On a mode transition, order matters:
    - into off: `stream.stop()` then `light("OFF")`
    - into light: `stream.stop()` then `light("ON")`
-   - into streaming: `light("ON")` then `stream.start()`
+   - into streaming: `stream.start()` only, no `light("ON")`: frames light an off strip by themselves, and the strip obeys an "on" even mid-stream, flashing its ordinary colour
 8. `pacer.decide()`; if it says send, `setSmoothingMs()`, `frame()`, then `noteSent()`.
 
 ## Versioning

@@ -55,7 +55,7 @@ import {
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.3.2";
+export const VERSION = "1.3.3";
 
 /** Knobs with a slider: the file only sets their startup value (a live reload would fight the slider). */
 const SLIDER_OWNED = new Set(["occupancyBudget", ...KNOBS.map((k) => k.knob)]);
@@ -1061,10 +1061,11 @@ export default class HueLink {
             await this.stream.stop();
             if (!(await this.light("ON"))) return false;
         } else if (!this.stream.running) {
-            // Out of the dark back into the stream: power first, then the
-            // stream. Frames go nowhere on an off strip, so a failed "on" must
-            // stop here rather than start streaming into a dark strip.
-            if (this.output === MODE_OFF && !(await this.light("ON"))) return false;
+            // Into the stream WITHOUT an "on". Tested on the strip: frames
+            // light an off strip by themselves, and an "on" (before or after
+            // the start) flashes its last ordinary colour, mid-film after
+            // every trip. The price: z2m/HA show the light entity as off
+            // while it streams.
             await this.stream.start();
         }
         this.output = mode;
@@ -1567,9 +1568,11 @@ export default class HueLink {
         // z2m reports a state only once the strip acked it, so an "ON" here,
         // even the echo of our own, proves the strip is back on the network:
         // that clears the give-up alert. It does not prove frames get through,
-        // so it buys one more try, not a fresh ladder (`Breaker.ackedOn`):
-        // every command turns the strip on, and a strip that acks that but
-        // fails frames must not be handed three more trips per command. Only
+        // so it buys one more try, not a fresh ladder (`Breaker.ackedOn`): a
+        // strip that acks an "on" but fails frames must not be handed three
+        // more trips per "on". The "on" comes from light mode or the HA light
+        // entity; sync/effect send none (it flashes the strip), so there
+        // `RECOVERY_FRAMES` clears the give-up instead. Only
         // "ON": every trip sends a forced "OFF".
         if (value === "ON" && this.breaker.autoRetryExhausted) {
             this.breaker.ackedOn();

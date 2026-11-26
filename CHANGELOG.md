@@ -4,6 +4,18 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.3.3
+
+Sync and effects no longer flash the strip's ordinary light when they start, including after a trip in the middle of a film.
+
+### Fixed
+
+- **No "on" when entering sync/effect.** The strip obeys an "on" even while streaming and shows its last ordinary colour until the next frame. Tested on the strip: frames light an off strip by themselves, so the "on" was never needed. The light entity in z2m/HA now stays "off" while the strip streams.
+
+### Upgrading
+
+- Only `huelink.mjs` changed: saving the extension is enough. `huelink_version` shows 1.3.3 when it has loaded.
+
 ## 1.3.2
 
 A strip that is really gone is no longer retried for ever. Endless retries against an unreachable strip can jam the whole Zigbee network.

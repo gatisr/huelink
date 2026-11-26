@@ -1,6 +1,6 @@
 {
   "name": "huelink",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "zigbee2mqtt extension that streams Hue entertainment frames to a gradient lightstrip, with 26 local effects and Home Assistant discovery. No Hue bridge.",
   "keywords": [
     "zigbee2mqtt",

@@ -653,9 +653,9 @@ async function testArmedRelightsItself() {
     assert.strictEqual(h.link.output, "sync", `the strip should sync again, was ${h.link.output}`);
     assert.strictEqual(h.link.arbiter.power, true, "power should be back");
     assert.strictEqual(lastState(h.published).mode, MODE_LABEL.sync, "the mode should return to Sync");
-    // An ON has to reach the strip before the frames do: entertainment frames
-    // go nowhere on a strip that is switched off.
-    assert.strictEqual(lightCommands(h.published).at(-1), "ON", "an ON command must precede the stream");
+    // No ON: frames light an off strip by themselves (tested on the strip),
+    // and an ON would flash its ordinary colour first.
+    assert.notStrictEqual(lightCommands(h.published).at(-1), "ON", "no ON on the way back into the stream");
     const frames = h.sends.slice(before).filter((s) => s === "cmd:1").length;
     assert.ok(frames > 3, `frames must flow once it is back, got ${frames}`);
 
@@ -1141,7 +1141,20 @@ async function testCommandTopicIsInvisibleToTheCore() {
     console.log(`  ${configs.length} discovery entities command on /command, invisible to the core router`);
 }
 
+async function testIntoTheStreamWithoutAnOn() {
+    const h = harness({ failing: false });
+    await h.link.start();
+    await h.link.applyOutput("off");
+    h.published.length = 0;
+
+    assert.ok(await h.link.applyOutput("sync"));
+    assert.ok(h.link.stream.running, "the stream must be started");
+    assert.deepStrictEqual(lightCommands(h.published), [], "an ON flashes the strip's ordinary colour");
+    await h.link.stop();
+}
+
 const tests = [
+    ["into the stream without an ON, so the strip does not flash", testIntoTheStreamWithoutAnOn],
     ["trips and then goes quiet", testTripsAndGoesQuiet],
     ["a trip switches off, it does not light up", testTripDoesNotLightTheStrip],
     ["a healthy stream is left alone", testHealthyStreamUnaffected],

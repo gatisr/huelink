@@ -113,9 +113,9 @@ config changed: segments, udpPort only take effect after a zigbee2mqtt restart
 | `udpPort` | `19447` | Where Hyperion's `udpraw` points. |
 | `udpBind` | `"0.0.0.0"` | `"127.0.0.1"` if Hyperion is on the same host. |
 | `udpAllowFrom` | `[]` | Allowed sender IPs. Empty = anyone who reaches the port (a frame has no sender or password). Drops are summarised once a minute, never per sender, so a forged source cannot flood the log. |
-| `tickMs` | `20` (1-1000, restart) | Loop period, **not** the frame rate. Short so a cut is noticed immediately. |
-| `startSettleMs` | `2000` (restart) | Startup pause so echoes from the previous run can finish. |
-| `sourceTtlMs` | `1000` | Silence after which a source counts as gone and the strip turns off (`udpraw` has no end-of-stream signal). |
+| `tickMs` | `20` (1-1000, restart) | Loop period, **not** the frame rate. Short so a cut is noticed immediately. **Lower:** a cut is noticed a few ms sooner, a little more CPU, the strip is not faster. **Higher:** scene cuts and commands land up to one tick late. |
+| `startSettleMs` | `2000` (restart) | Startup pause so echoes from the previous run can finish. **Lower:** after a z2m restart an old ON/OFF echo can be taken for a press and flip the strip. **Higher:** the strip ignores the TV that much longer after a restart. |
+| `sourceTtlMs` | `1000` (restart) | Silence after which a source counts as gone and the strip turns off (`udpraw` has no end-of-stream signal). **Lower:** the strip goes dark sooner after the TV, but any gap in the frames (Wi-Fi jitter, UDP delay in a container or VM, a GC pause, the sender stalling) turns it off and back on mid-film. **Higher:** survives those gaps, but holds the last frame that long after the TV is off. Sender on Wi-Fi or in another container: try `3000`. |
 | `name` | `"huelink"` | MQTT topic `<base>/<name>`, commands on `<base>/<name>/command` (not `/set`, see docs/DESIGN.md). |
 | `locale` | `"en"` | `"en"` or `"lv"`. Wire values (MQTT keys, modes, effect ids) are never translated. Mode names are HA select values, so changing it renames them. Preset names are fixed English. |
 
@@ -125,10 +125,10 @@ How much of the Zigbee coordinator the strip may take from the rest of the house
 
 | Field | Default | Notes |
 |---|---|---|
-| `fps` | `5` (1..`maxFps`, restart) | **Starting** value only; HA and the device page own it afterwards. 5 is not a radio limit, see PACING.md. |
-| `maxFps` | `5` (1-50, restart) | Highest cap the slider accepts. Permission, not delivery; raising it alone changes nothing. |
-| `dutyCap` | `2` (1-5, restart) | Frames per 100 ms window. Bounds how many frames can sit ahead of a wall-switch press. 2 = 20 fps ceiling. |
-| `occupancyBudget` | `0.35` (0.05-0.9, starting value) | Share of wall time streaming may keep the coordinator busy. Buys roughly budget / frame cost: 0.35 at 51 ms = 6.9 fps. Above ~0.4 the house queues behind the strip. HA shows 5-90 %. |
+| `fps` | `5` (1..`maxFps`, restart) | **Starting** value only; HA and the device page own it afterwards. 5 is not a radio limit, see PACING.md. **Lower:** slower colour changes, less air used. **Higher:** follows the picture closer, but only if the budget below can pay for it (`fps_real` tells). |
+| `maxFps` | `5` (1-50, restart) | Highest cap the slider accepts. Permission, not delivery; raising it alone changes nothing. **Lower:** caps the slider and every preset. |
+| `dutyCap` | `2` (1-5, restart) | Frames per 100 ms window. Bounds how many frames can sit ahead of a wall-switch press. 2 = 20 fps ceiling. **Higher:** more fps possible, and a wall switch elsewhere may wait an extra frame. |
+| `occupancyBudget` | `0.35` (0.05-0.9, starting value) | Share of wall time streaming may keep the coordinator busy. Buys roughly budget / frame cost: 0.35 at 51 ms = 6.9 fps. HA shows 5-90 %. **Lower:** fewer frames, the rest of the house stays snappy. **Higher:** more frames; above ~0.4 other Zigbee devices answer late or time out. |
 
 ### Picture quality
 
@@ -136,10 +136,10 @@ Starting values (the sliders own them while running). These change the look, not
 
 | Field | Default | Notes |
 |---|---|---|
-| `smoothingFactor` | `1.15` (1-2) | Fade time as a multiple of the frame gap. Above 1 so colour never rests between frames. Higher = smoother, further behind. |
-| `bigChangeThreshold` | `6` (1-40) | Perceptual steps that count as a scene cut. 1 = everything is a cut and `fps` controls nothing; 40 = off. |
-| `fastSmoothingMs` | `50` (0-500) | Fade for a scene cut. 20-40 is worth trying. |
-| `maxFastPerSec` | `1` (0-10) | Scene cuts per second that may skip the frame clock. A ration, so a strobe cannot make `fps` meaningless. 0 = off. |
+| `smoothingFactor` | `1.15` (1-2) | Fade time as a multiple of the frame gap. Above 1 so colour never rests between frames. **Lower:** reacts sooner; near 1 the colour visibly steps. **Higher:** smoother, but lags the picture. |
+| `bigChangeThreshold` | `6` (1-40) | Perceptual steps that count as a scene cut. **Lower:** more changes jump straight through; at 1 everything is a cut and `fps` controls nothing. **Higher:** cuts fade like ordinary changes and arrive late; 40 = off. |
+| `fastSmoothingMs` | `50` (0-500) | Fade for a scene cut. **Lower:** flashes land as flashes; below ~15 ms some strips click. **Higher:** cuts are softer and later. 20-40 is worth trying. |
+| `maxFastPerSec` | `1` (0-10) | Scene cuts per second that may skip the frame clock. A ration, so a strobe cannot make `fps` meaningless. **Lower:** strobes are averaged away; 0 = off. **Higher:** strobes come through, at the cost of air. |
 | `saturation` | `1.0` (0.5-2) | Multiplier, `c' = luma + (c - luma) * s` on sRGB bytes (Rec.709). 1.0 is bit-identical to no saturation. Grey and black stay put; brightness is untouched. Try 1.3-1.6; above ~1.8 content clips to primaries. **Costs the coordinator nothing.** HA shows 50-200 %. |
 
 ### Presets
@@ -208,9 +208,9 @@ Off by default. A burst spends the budget **earlier**; it creates none. It pays 
 | Field | Default | Notes |
 |---|---|---|
 | `burstFps` | `0` (off, 0-15 or `maxFps`) | Frame rate during a burst, started by a scene cut. Does not touch `dutyCap`. |
-| `burstMaxMs` | `1000` (0-5000) | Longest single burst. 0 also disables. |
-| `burstCreditMs` | `500` (0-5000) | Bucket size in coordinator ms; the real limiter. |
-| `burstRefill` | `1` (0-1) | Share of unspent budget banked as credit. |
+| `burstMaxMs` | `1000` (0-5000) | Longest single burst. 0 also disables. **Higher:** a long action scene stays fast longer, if credit lasts. |
+| `burstCreditMs` | `500` (0-5000) | Bucket size in coordinator ms; the real limiter. **Higher:** longer bursts, and a longer spike in coordinator load during them. |
+| `burstRefill` | `1` (0-1) | Share of unspent budget banked as credit. **Lower:** bursts refill slower, the average air used drops. |
 
 Measured (300 s synthetic film, 51 ms frames): burst at 12 fps moved mean occupancy 19.5 -> 21.6 % and p95 20.4 -> 30.6 %, while the worst wait for a foreign command stayed one frame (51 ms). See `tools/burstbench.mjs`.
 
@@ -283,6 +283,7 @@ stateDiagram-v2
 | Mode is Sync, nothing happens | Sync with no frames is `off` by design. Check: Hyperion capture running; controller is `udpraw` to the z2m host and right port; UDP port published in Docker; `tools/udpdump.py` sees 21-byte datagrams. |
 | Dark and unsure why | Read `huelink_status`. **armed** = waiting for frames, normal. **tripped** (`"<mode> stopped: the strip is not responding"`) = breaker open; it retries itself, or pick a mode / turn power on to retry now. If the status adds "auto-retry gave up", it no longer retries: turn power on or pick a mode. |
 | Sync freezes, then catches up; log says `the picture reached the strip N ms late` | Each line names where the time went (frame in flight, pause after a failed frame, air budget, frame quota). The `frame send failed` line just before it carries the real error. See [docs/PACING.md](docs/PACING.md), "Latency spikes and the occupancy meter". |
+| Mid-film the status flips to "waiting for TV" and back to Sync a second later, at random intervals | Frames stopped for longer than `sourceTtlMs` (1 s) though the TV never went off: Wi-Fi jitter, UDP delay in a container or VM, a GC pause, the sender stalling. Raise `sourceTtlMs` to `3000` (restart). |
 | `fps_real` below `fps` | Normal: the pacer trims frames by budget and delta suppression. High `dropped` + low `fps_real` = suppression working; low `dropped` + low `fps_real` = sends are failing. See [docs/PACING.md](docs/PACING.md). |
 | Edited a file under `huelink-lib/`, nothing changed | z2m reloads only the top-level file; `huelink-lib/` stays cached until a process restart. Confirm with `huelink_version`. |
 | Light off button does nothing mid-stream | Should not happen (HueLink intercepts power on the strip's `/set`). The extension is not running. |

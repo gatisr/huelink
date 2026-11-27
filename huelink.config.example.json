@@ -43,7 +43,7 @@
     "maxFastPerSec": "How many times per second a scene cut may skip the frame clock, 0 to 10. A ration, not a mode: without it a strobe would be 'all cuts' and the fps setting would control nothing. 0 switches the fast path off. The worst case stays fps + maxFastPerSec. This is only the STARTING value: the Home Assistant slider owns it afterwards. RESTART REQUIRED.",
     "saturation": "Colour saturation multiplier, 0.5 to 2. 1.0 sends the pixels exactly as the TV sent them. Above 1 pulls colours away from grey (past about 1.7 half-tones collapse into flat primaries); below 1 mutes them. Costs the coordinator nothing. HA shows it as 'HueLink saturation' in percent (50 to 200). This is only the STARTING value: the Home Assistant slider owns it afterwards. RESTART REQUIRED.",
 
-    "_presets": "--- Presets are not configured here; they are data in extension/huelink-lib/presets.json. Picking one sets fps, occupancyBudget and the quality fields above at once (never dutyCap). 'Normal' equals the defaults in this file. ---",
+    "_presets": "--- Presets are not configured here; they are data in extension/huelink-lib/presets.json. Picking one sets fps, occupancyBudget and the quality fields above at once (never dutyCap). 'Normal' equals the defaults in this file. What was last chosen in Home Assistant is kept in huelink.state.json next to this file and wins over these starting values at start. ---",
 
     "_burst": "--- The burst. OFF by default. It spends the budget EARLIER, it does not create any. Read the 'Burst' section of docs/PACING.md first. ---",
 

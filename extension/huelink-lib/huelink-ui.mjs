@@ -39,11 +39,33 @@ export const PRESET_PROBLEMS = [];
 export const PRESETS = loadPresets({ error: (m) => PRESET_PROBLEMS.push(m) });
 
 /**
+ * The one preset that is not in the catalogue: whatever the sliders were last
+ * set to by hand. Fixed English, like the catalogue names. `loadPresets`
+ * refuses a catalogue entry of this name.
+ */
+export const CUSTOM_PRESET = "Custom";
+/** Preset select values: the catalogue, then Custom. */
+export const PRESET_OPTIONS = [...PRESETS.map((p) => p.name), CUSTOM_PRESET];
+
+/**
  * HA entity category of each control, one table for the z2m definition and our
  * discovery payloads. Keys are short names; `categoryOf()` accepts either form.
  * No category = main control; `config` = setting; `diagnostic` = reading.
  */
-export const MAIN = ["mode", "effect", "preset", "effect_speed", "status"];
+export const MAIN = [
+    "mode",
+    "brightness",
+    "status",
+    "preset",
+    "saturation",
+    "effect",
+    "effect_speed",
+    "custom_style",
+    "custom_colours",
+    "custom_own",
+    "custom_colour_add",
+    "custom_colour_clear",
+];
 
 /** Settings, kept off the main list so the few everyday controls stay visible. */
 export const CONFIGURATION = [
@@ -55,9 +77,16 @@ export const CONFIGURATION = [
     "cut_threshold",
     "cut_ms",
     "cut_per_sec",
-    "saturation",
-    "effect_brightness",
 ];
+
+/**
+ * Which HA device a control sits on. One device held sync tuning and effect
+ * setup in one alphabetical list; the device page has no other grouping, so
+ * they are two more devices linked to the main one. Anything not listed is on
+ * the main device. Entity ids do not depend on this.
+ */
+export const SYNC_DEVICE = ["preset", "saturation", "fps", "budget", "smoothing", "cut_threshold", "cut_ms", "cut_per_sec", "fps_real", "occupancy", "fps_ceiling"];
+export const EFFECTS_DEVICE = ["effect", "effect_speed", "custom_style", "custom_colours", "custom_own", "custom_colour_add", "custom_colour_clear"];
 
 /** Readings; read-only entities cannot be `config` (HA drops the whole discovery message). */
 export const DIAGNOSTIC = ["version", "fps_real", "dropped", "occupancy", "fps_ceiling", "breaker", "activity"];
@@ -139,14 +168,14 @@ const SPECS = [
         description: t("field.mode.description"),
         values: Object.values(MODE_LABEL),
     },
-    // State is null (no selection) when no preset matches the live values.
+    // "Custom" when no catalogue preset matches the live values.
     {
         key: "huelink_preset",
         type: "enum",
         access: ACCESS_STATE_SET,
         label: t("field.preset.label"),
         description: t("field.preset.description"),
-        values: PRESETS.map((p) => p.name),
+        values: PRESET_OPTIONS,
     },
     {
         key: "huelink_fps",

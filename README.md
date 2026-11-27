@@ -1,4 +1,6 @@
-# HueLink
+# <img src="docs/img/huelink-icon.svg" width="40" align="top" alt=""> HueLink
+
+![A television on a dark wall; the light strip behind it glows along the top and both sides in the colours of the picture's edges](docs/img/ambilight.svg)
 
 Drives a Philips Hue gradient lightstrip from **zigbee2mqtt alone**, using the strip's own Entertainment streaming mode. Hyperion screen colours reach the strip at full gradient resolution with **no Hue bridge, no Hue account, no cloud and no bridge emulator**. 26 local effects travel the same path.
 
@@ -74,18 +76,18 @@ A healthy start logs, in order: settings read, effects loaded, startup reset sen
 | --- | --- |
 | `version`, `status`, `fps_real`, `dropped` | Read-only: loaded version, one-line state, frames delivered in the last 5 s, frames suppressed since start |
 | `mode` | Light / Effect / Sync |
-| `preset` | Normal / Calm / Dynamic / Vivid; shows no value once any slider is moved |
+| `preset` | Normal / Calm / Dynamic / Vivid / Custom; Custom is whatever the sliders were last set to by hand |
 | `fps`, `delta`, `duty`, `budget` | Frame cap, delta threshold, quota per 100 ms, air budget % |
 | `smoothing`, `cut_threshold`, `cut_ms`, `cut_per_sec` | Fade length, scene-cut size, scene-cut fade, cuts per second |
 | `saturation` | Colour saturation % |
 
-**Home Assistant** gets a separate "HueLink" device, linked to the strip with `via_device`:
+**Home Assistant** gets three linked devices, so sync tuning and effect setup are not one long list:
 
-| Group | Entities |
-| --- | --- |
-| Main | Mode, Picture preset, Effect, Effect speed, Status |
-| Configuration | Frame cap, Air budget, Fade length, Scene cut threshold / fade / per second, Colour saturation, Effect brightness |
-| Diagnostic | Frames per second, Coordinator load, Deliverable frame rate, Strip needs attention, Activity |
+| Device | Controls | Configuration | Diagnostic |
+|---|---|---|---|
+| **HueLink** (linked to the strip) | Mode, Brightness, Status | | Activity, Strip needs attention |
+| **HueLink Sync** | Picture preset, Colour saturation | Frame cap, Air budget, Fade length, Scene cut threshold / fade / per second | Frames per second, Coordinator load, Deliverable frame rate |
+| **HueLink Effects** | Effect, Effect speed, Custom effect style / colours / own colour list, Add the strip's colour, Clear own colours | | |
 
 - Status is a main control: it is the only way to tell a strip that is dark on purpose from one that stopped answering.
 - Power is the strip's own `light` entity. There is no HueLink power switch.
@@ -95,11 +97,15 @@ A healthy start logs, in order: settings read, effects loaded, startup reset sen
 - **Duplicates:** z2m also publishes the `huelink_*` fields next to the light in HA. They are discovered *disabled*, which does nothing for entities HA already registered: disable or delete those once in HA.
 - **Activity** is Status as a fixed word: `off`, `light`, `effect`, `sync`, `waiting` (dark, waiting for the TV), `tripped`, `gave_up`. Use it in card conditions and automations; Status is translated and may change wording.
 - Every entity reads "unavailable" while zigbee2mqtt is down.
+- **Brightness** is the strip's own and dims light, effects and sync alike; there is no separate effect brightness. HueLink's Brightness slider shows the same value as the light card, with two differences: it does not interrupt a running stream (the frames are dimmed, the strip gets no command) and it does not switch a dark strip on.
+- **Your choices survive a restart:** the selected preset and effect, effect speed, the Custom preset and the custom effect are kept in `huelink.state.json` next to the config file. The mode is not: after a restart the strip is off and waits for the TV.
 - **Entity ids** are `<domain>.huelink_<id>` (`select.huelink_mode`, `sensor.huelink_activity`, ...) in every language, on Home Assistant 2025.10 or newer. HA applies them only when it first registers an entity: on an older install, delete the HueLink device in HA and restart zigbee2mqtt, or rename the ids in the example below.
 
 ### Dashboard example
 
-Mode as a row of buttons, the controls that matter for the current activity, and the load on the coordinator. Replace `light.hue_gradient_strip` with your strip.
+[![The same Home Assistant card in each of the four modes: Off, Light, Effect and Sync](docs/img/dashboard.webp)](docs/img/dashboard.webp)
+
+Mode as a row of buttons, one brightness for every mode, the controls that matter for the current activity, and the load on the coordinator. In Light mode the strip's own light appears for colour; replace `light.hue_gradient_strip` with your strip.
 
 ```yaml
 type: vertical-stack
@@ -110,6 +116,26 @@ cards:
     features:
       - type: select-options
         style: buttons
+  - type: tile
+    entity: sensor.huelink_status
+  - type: tile
+    entity: number.huelink_brightness
+    features:
+      - type: numeric-input
+        style: slider
+  # Light mode: the strip's own light, for colour and white temperature. Tap it for the full colour wheel.
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.huelink_activity
+        state: light
+    card:
+      type: tile
+      entity: light.hue_gradient_strip
+      features:
+        - type: light-color
+          controls: hue_saturation
+        - type: light-color-temp
   # Always visible, so an effect can be picked before Effect is switched on.
   - type: tile
     entity: select.huelink_effect
@@ -126,6 +152,20 @@ cards:
       features:
         - type: numeric-input
           style: slider
+  # Your own effect: shown while "Custom" is the selected effect ("Savs efekts" with locale lv).
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: select.huelink_effect
+        state: Custom
+    card:
+      type: entities
+      entities:
+        - select.huelink_custom_style
+        - select.huelink_custom_colours
+        - text.huelink_custom_own
+        - button.huelink_custom_colour_add
+        - button.huelink_custom_colour_clear
   - type: conditional
     conditions:
       - condition: state
@@ -164,7 +204,7 @@ tap_action:
 
 ## Configuration
 
-Every field is optional. **Live** fields apply when you save the file (mtime checked every 2 s). Fields with a Home Assistant slider (budget, picture quality, saturation) are **starting values only**, so a save never undoes a preset or slider; they and the **restart** fields are named in the log when the file changed, not silently ignored.
+Every field is optional. **Live** fields apply when you save the file (mtime checked every 2 s). Fields with a Home Assistant slider (budget, picture quality, saturation) are **starting values only**, so a save never undoes a preset or slider, and once anything has been changed from Home Assistant the saved choice (`huelink.state.json`) wins over them at start; delete that file to go back to the config values; they and the **restart** fields are named in the log when the file changed, not silently ignored.
 
 ```
 config changed, applied: fastSmoothingMs=30, burstFps=12
@@ -213,7 +253,7 @@ Starting values (the sliders own them while running). These change the look, not
 
 > **Warning:** the air budget, the presets and the sliders are reachable by anything that can publish to `huelink/command` or use the HA device. Raising the budget by hand takes coordinator time from every other Zigbee device, and Dynamic uses more of it than the other presets. Change them **at your own risk** and watch the Zigbee network (command latency, failures, offline devices) closely while you do.
 
-`huelink_preset` sets all seven picture knobs (`fps`, `occupancyBudget`, the four above, `saturation`) at once. Moving any slider afterwards clears the selection (the select shows no value).
+`huelink_preset` sets all seven picture knobs (`fps`, `occupancyBudget`, the four above, `saturation`) at once. Moving any slider afterwards turns the selection into **Custom**.
 
 | Preset | How the strip behaves |
 | --- | --- |
@@ -221,6 +261,7 @@ Starting values (the sliders own them while running). These change the look, not
 | **Calm** | Slow, soft fades. Only big scene changes jump, at most one a second; flashes are smoothed away. Lowest load. |
 | **Dynamic** | Fastest reaction: 5 fps, no extra fade, flashes and strobes come through (5 a second), stronger colour. Highest load. |
 | **Vivid** | Normal, with colour saturation at 150 %. Same load as Normal. |
+| **Custom** | Your own: the values the sliders were last set to by hand. Nothing to save; pick another preset and come back. |
 
 - No preset raises `occupancyBudget` above 0.35 or touches `dutyCap`, so the worst wait for someone else's command stays two frames. Measured load per preset: [docs/PACING.md](docs/PACING.md), "Default since 1.3.4".
 - A preset cannot exceed `maxFps`; a trimmed knob is named in the log. None does on a default install.
@@ -317,6 +358,19 @@ Measured (300 s synthetic film, 51 ms frames): burst at 12 fps moved mean occupa
 The strip is a bias light behind a TV, so every effect must be visible within two seconds and must not sit near-black (two, a wake-up ramp and a wind-down, are dark on purpose and say so). `tools/effectproof.mjs` measures this on the bytes sent.
 
 Effects are **data**: add an entry to `extension/huelink-lib/effects/effects.json` (and a generator file only for a genuinely new motion). See [docs/EFFECTS.md](docs/EFFECTS.md).
+
+### Your own effect
+
+The last entry in the effect list, **Custom**, is yours, set up in Home Assistant with no file to edit:
+
+- **Custom effect style:** Wave, Breathe, Flame, Chase, Pulse, Twinkle, Strobe or Solid.
+- **Custom effect colours:** the colours of any built-in effect, or **Own colours**.
+- **Own colours**, up to 8, two ways:
+  - On a phone: set Mode to Light, pick a colour on the strip's own light card (the strip shows it), press **Add the strip's colour**. Repeat. **Clear own colours** starts over.
+  - By hand: type them into **Own colour list**, e.g. `#ff0000 #00ff88 #ffffff`.
+- Speed is the Effect speed slider, brightness the strip's own.
+
+Changes apply at once when Custom is the running effect. With no own colours the style shows its default ones.
 
 ---
 

@@ -3,6 +3,9 @@
 # without it nobody would know which fields exist.
 huelink.config.json
 
+# What the user last chose in Home Assistant, written by the extension next to the config file.
+huelink.state.json
+
 # The deploy settings: a Home Assistant token, broker credentials and the path
 # to someone's zigbee2mqtt. .env.example IS tracked, for the same reason as
 # above.

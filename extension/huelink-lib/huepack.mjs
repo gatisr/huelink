@@ -146,6 +146,60 @@ export function rgbToXy(r8, g8, b8) {
     return { x: D65.x, y: D65.y, brightness: 0.0 };
 }
 
+/** Inverse of `M_RGB_TO_XYZ`, computed rather than typed in, so the two cannot drift. */
+const M_XYZ_TO_RGB = (() => {
+    const [a, b, c, d, e, f, g, h, i] = M_RGB_TO_XYZ;
+    const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    return [e * i - f * h, c * h - b * i, b * f - c * e, f * g - d * i, a * i - c * g, c * d - a * f, d * h - e * g, b * g - a * h, a * e - b * d].map(
+        (v) => v / det,
+    );
+})();
+
+/**
+ * xy -> "#rrggbb" at FULL brightness (largest channel 255), the inverse of
+ * `rgbToXy`. For reading a colour back from the strip's own light state; how
+ * bright it is shown is a separate question (`dim`). Out-of-gamut channels are
+ * clipped at 0.
+ */
+export function xyToHex(x, y) {
+    if (!(y > Number.EPSILON)) return "#ffffff";
+    const lin = mult(M_XYZ_TO_RGB, [x / y, 1, (1 - x - y) / y]).map((v) => Math.max(v, 0));
+    const top = Math.max(...lin);
+    if (!(top > Number.EPSILON)) return "#ffffff";
+    return (
+        "#" +
+        lin
+            .map((v) => {
+                const c = v / top;
+                const g = c > 0.0031308 ? 1.055 * c ** (1 / 2.4) - 0.055 : 12.92 * c;
+                return clamp8(g * 255).toString(16).padStart(2, "0");
+            })
+            .join("")
+    );
+}
+
+/** Colour temperature in mireds -> xy on the Planckian locus (Kim et al. cubic approximation, 1667-25000 K). */
+export function miredToXy(mired) {
+    const T = Math.min(Math.max(1e6 / mired, 1667), 25000);
+    const x =
+        T <= 4000
+            ? -0.2661239e9 / T ** 3 - 0.2343589e6 / T ** 2 + 0.8776956e3 / T + 0.17991
+            : -3.0258469e9 / T ** 3 + 2.1070379e6 / T ** 2 + 0.2226347e3 / T + 0.24039;
+    const y =
+        T <= 2222
+            ? -1.1063814 * x ** 3 - 1.3481102 * x ** 2 + 2.18555832 * x - 0.20219683
+            : T <= 4000
+              ? -0.9549476 * x ** 3 - 1.37418593 * x ** 2 + 2.09137015 * x - 0.16748867
+              : 3.081758 * x ** 3 - 5.8733867 * x ** 2 + 3.75112997 * x - 0.37001483;
+    return { x, y };
+}
+
+/** Scale every channel by `k` (0..1). `k === 1` returns the input untouched, like `saturate`. */
+export function dim(colors, k) {
+    if (k === 1) return colors;
+    return colors.map((c) => ({ r: clamp8(c.r * k), g: clamp8(c.g * k), b: clamp8(c.b * k) }));
+}
+
 /** Rust `as u16`: truncate toward zero, saturate to 0..65535. */
 function asU16(v) {
     if (Number.isNaN(v)) return 0;

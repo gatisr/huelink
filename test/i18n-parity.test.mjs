@@ -172,6 +172,8 @@ test("every key the code uses is known to both locales", () => {
         "extension/huelink-lib/huelink-ui.mjs",
         "extension/huelink-lib/effects/index.mjs",
         "extension/huelink-lib/presets.mjs",
+        "extension/huelink-lib/custom.mjs",
+        "extension/huelink-lib/discovery.mjs",
         "converter/huelink-exposes.mjs",
     ];
     const used = new Set();

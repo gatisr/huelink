@@ -249,14 +249,10 @@ async function main() {
         );
 
         console.log("\n4) HA -> extension: the controls");
-        await callService("number", "set_value", { entity_id: ids.effect_brightness, value: 40 });
         await callService("number", "set_value", { entity_id: ids.effect_speed, value: 200 });
         await sleep(800);
-        check(Math.round(ext.effects.brightness * 100) === 40, "brightness 40%", String(ext.effects.brightness));
         check(Math.round(ext.effects.speed * 100) === 200, "speed 200%", String(ext.effects.speed));
-        const hb = await waitState(ids.effect_brightness, "40");
         const hs = await waitState(ids.effect_speed, "200");
-        check(Number(hb) === 40, "HA brightness 40", `state=${hb}`);
         check(Number(hs) === 200, "HA speed 200", `state=${hs}`);
 
         console.log("\n5) Another client publishes to /set: the HA state is real, not just our own echo");

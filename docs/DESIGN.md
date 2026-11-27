@@ -104,6 +104,30 @@ This file deliberately does **not** read TV state. HA already does: capture runs
 
 On start the extension also sends an unconditional `stream.reset()`. If the previous process died mid-stream, the strip is still in entertainment mode and would otherwise ignore everything.
 
+## What a restart keeps: `huelink.state.json`
+
+The restart rule above is about power and mode. What the user *set up* is a different matter: a zigbee2mqtt update that silently puts the picture preset back to Normal and the effect back to the first in the list is a surprise, not a safety property. So one small file next to the config remembers:
+
+- the selected preset and effect, and the effect speed;
+- the **Custom preset** (the knob values last set by hand);
+- the **custom effect** (style, colour source, own colours).
+
+`#remember()` runs from `publishState`, the one point every change passes through, and writes only when the content changed, through a temp file and a rename. A start by itself writes nothing, so an install nobody has touched from HA has no file and keeps starting from its config. `#restore()` reads it in `start()`. An unreadable file costs the saved choices and one log line, never the start. The saved preset wins over the config file's starting values, because it is the later decision; deleting the file hands the start back to the config. With `HUELINK_CONFIG` set (tools and tests) there is no state file unless `HUELINK_STATE` names one.
+
+There is no save button. Knob values that match no catalogue preset *are* the Custom preset, so moving a slider is the save.
+
+## One brightness
+
+The strip's own brightness (the HA light card's slider) is the brightness of every mode. Entertainment frames carry their own brightness and ignore the strip's level, so the extension reads the level from the strip's state reports (`#entityState`, the `brightness` delta) and scales every frame by it in `tick` (`dim`). There is no separate effect brightness: two sliders that multiply are two places to be dark.
+
+A brightness command sent mid-stream from the light card also reaches the strip itself, because the extension cannot stop z2m forwarding a `/set`. The strip may show its ordinary light until the next frame, so `setBrightness` asks the pacer for that frame at once (`forceNext`: no fps clock, no delta suppression, window and budget still apply).
+
+HueLink's own Brightness entity avoids that. It commands the extension (`{"brightness": pct}` on `/command`), and `setBrightnessPct` tells the strip only while it is lit as an ordinary light. During a stream, or dark, it dims the frames and publishes the level into z2m's state cache only (`publishEntityState`, like `showOn`), so the light card shows the same value, no stream is interrupted and a dark strip stays dark. `levelDirty` records that the strip has not been told; `#pushBrightness` sends the level when the strip next becomes a light. A report that differs from the level held is the strip's own (light card, wall dimmer) and is adopted; one that equals it is our own echo.
+
+## Three HA devices
+
+The HA device page groups by category and sorts by name, nothing else, so one device showed sync tuning and effect setup as one list. `SYNC_DEVICE` and `EFFECTS_DEVICE` (`huelink-ui.mjs`) put those entities on two more devices linked to the main one with `via_device`; everything else stays on the main device, which is linked to the strip. Entity ids come from `default_entity_id` and do not change with the device.
+
 ## Startup settle window
 
 After `start()` the extension waits `startSettleMs` (default 2000 ms) before the first tick, so that command echoes from its previous life have time to finish. That is about 10× the normal echo path, and it is invisible in practice: Hyperion's capture takes ~7 s to come up anyway.
@@ -196,7 +220,7 @@ A missing file means defaults, so the extension loads straight after install and
 
 ## Retired entities
 
-`RETIRED` lists HA discovery entities from earlier versions (`switch.sync`, `sensor.sync_status`, `sensor.source`, `sensor.mode`). They are blanked with empty retained payloads on start. Without that, a stale retained discovery message leaves a dead entity in HA forever.
+`RETIRED` lists HA discovery entities from earlier versions (`switch.sync`, `sensor.sync_status`, `sensor.source`, `sensor.mode`, `number.effect_brightness`). They are blanked with empty retained payloads on start. Without that, a stale retained discovery message leaves a dead entity in HA forever.
 
 ## MQTT surface
 
@@ -213,7 +237,6 @@ Three topics, all relative to the z2m base topic (`zigbee2mqtt` by default). `<n
   "armed": null,
   "status": "Sync",
   "effect": "Mood: Bonfire",
-  "effect_brightness": 100,
   "effect_speed": 100,
   "fps": 5,
   "fps_real": 4.8,
@@ -225,7 +248,7 @@ Three topics, all relative to the z2m base topic (`zigbee2mqtt` by default). `<n
 
 `mode` is what the user **chose**; `output` is what is actually being sent right now. In sync with no TV they differ, and that is the point: two fields, two questions. `armed` is what a dark strip is waiting for, `null` most of the time; without it, "off" and "off but armed" look identical from outside.
 
-**`<base>/<name>/command` — commands, JSON body.** Recognised keys: `power` (`ON`/`OFF`/`TOGGLE`), `mode`, `effect`, `effect_brightness`, `effect_speed`, `fps`, `occupancy_budget`. Unknown keys are ignored; an unknown effect **name** is refused rather than applied, because the engine would otherwise switch to "no effect" and leave effect mode on but empty. `effect` is applied before `mode`, so one command with both enters effect mode on that effect, even when none was selected before.
+**`<base>/<name>/command` — commands, JSON body.** Recognised keys: `power` (`ON`/`OFF`/`TOGGLE`), `mode`, `preset`, `effect`, `effect_speed`, `fps`, `occupancy_budget`, and for the custom effect `custom_style`, `custom_colours`, `custom_own` (a colour list) and `custom_colour` (`add` / `clear`). Unknown keys are ignored; an unknown effect **name** is refused rather than applied, because the engine would otherwise switch to "no effect" and leave effect mode on but empty. `effect` is applied before `mode`, so one command with both enters effect mode on that effect, even when none was selected before.
 
 The suffix is `/command` and not the more obvious `/set` on purpose. z2m's own publish extension routes every topic matching `<base>/(?!bridge)(.+?)/(get|set)` and resolves the captured name as a Zigbee entity. `<name>` is a virtual topic served by this extension, with no device behind it, so the core found nothing and logged `error: Entity '<name>' is unknown` on every single command. Any suffix outside that pattern is ignored by the core and still reaches the extension, because the core subscribes to `<base>/#` and hands every message to the event bus.
 

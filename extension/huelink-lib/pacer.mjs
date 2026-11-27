@@ -729,6 +729,15 @@ export class Pacer {
     }
 
     /** After a mode change the history no longer describes the new content. */
+    /**
+     * Let the next frame out now: no fps clock, no delta suppression. The
+     * window and the budget still apply, which is why this is not `reset()`.
+     */
+    forceNext() {
+        this.lastPerceptual = null;
+        this.lastSendAt = 0;
+    }
+
     reset() {
         this.lastPerceptual = null;
         this.lastSendAt = 0;

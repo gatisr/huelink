@@ -194,10 +194,11 @@ async function main() {
     check("the effect select carries the whole catalogue", options.length >= 20, `${options.length} effects`);
     check(
         "every effect name is grouped by a prefix",
-        options.every((o) => o.includes(": ")),
-        options.filter((o) => !o.includes(": ")).join(", ") || "all prefixed",
+        // The user's own effect is the one entry outside the groups.
+        options.every((o) => o.includes(": ") || o === t("custom.effect")),
+        options.filter((o) => !o.includes(": ") && o !== t("custom.effect")).join(", ") || "all prefixed",
     );
-    check("both effect knobs are there", Boolean(entity("effect_brightness") && entity("effect_speed")));
+    check("the effect speed knob is there", Boolean(entity("effect_speed")));
     check("the status sensor is there", Boolean(entity("status")));
 
     const tx = dgram.createSocket("udp4");
@@ -255,13 +256,12 @@ async function main() {
     check("the stream was not broken", r.resets === 0, `${r.resets} reset`);
 
     console.log("\n5) The controls");
-    s.fire(JSON.stringify({ effect: SECOND, effect_speed: 200, effect_brightness: 40 }));
+    s.fire(JSON.stringify({ effect: SECOND, effect_speed: 200 }));
     await sleep(200);
     s.fire(JSON.stringify({ mode: MODE_LABEL.effect }));
     await sleep(800);
     take();
     check("state says speed 200", state().effect_speed === 200);
-    check("state says brightness 40", state().effect_brightness === 40);
     check("output effect", ext.output === "effect", ext.output);
 
     console.log("\n6) An unknown effect is refused, the chosen one survives");

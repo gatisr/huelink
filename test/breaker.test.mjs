@@ -11,6 +11,8 @@
  */
 import assert from "node:assert";
 import { afterEach, test } from "node:test";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,7 +22,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 process.env.HUELINK_CONFIG = join(HERE, "fixtures", "breaker.config.json");
 
 const { default: HueLink } = await import("../extension/huelink.mjs");
-const { CMD_FRAME } = await import("../extension/huelink-lib/huepack.mjs");
+const { CMD_FRAME, rgbToXy } = await import("../extension/huelink-lib/huepack.mjs");
 const { CONFIG } = await import("../extension/huelink-lib/config.mjs");
 const { t } = await import("../extension/huelink-lib/i18n/index.mjs");
 const { MODE_LABEL } = await import("../extension/huelink-lib/huelink-ui.mjs");
@@ -664,7 +666,8 @@ async function testArmedRelightsItself() {
     // and an ON would flash its ordinary colour first.
     assert.notStrictEqual(lightCommands(h.published).at(-1), "ON", "no ON on the way back into the stream");
     const frames = h.sends.slice(before).filter((s) => s === "cmd:1").length;
-    assert.ok(frames > 3, `frames must flow once it is back, got ${frames}`);
+    // More than one, not a rate: the default frame cap is 3 since 1.3.4.
+    assert.ok(frames > 1, `frames must flow once it is back, got ${frames}`);
 
     await h.link.stop();
     console.log(`  TV back -> the strip lights itself, ${frames} frames without a single click`);
@@ -945,7 +948,7 @@ async function testBlackFlashDoesNotStrandTheStrip() {
     await sleep(900);
     clearInterval(fed);
     const frames = h.sends.filter((s) => s === "cmd:1").length - before;
-    assert.ok(frames > 3, `frames must keep flowing after the flash, got ${frames}`);
+    assert.ok(frames > 1, `frames must keep flowing after the flash, got ${frames}`);
 
     // THE CONVERSE, on the same run: a report nobody here caused is still
     // obeyed. Without this the fix would just be a deafer listener, and the
@@ -1207,10 +1210,172 @@ async function testEffectAndModeInOneCommand() {
     await h.link.stop();
 }
 
+const command = (h, body) => h.link.onCommand({ topic: `zigbee2mqtt/${CONFIG.name}/command`, message: JSON.stringify(body) });
+
+async function testCustomPresetRemembersHandSetValues() {
+    const h = harness({ failing: false });
+    await h.link.start();
+    assert.strictEqual(lastState(h.published).preset, "Normal");
+    // Before anything was set by hand there is nothing to bring back.
+    await command(h, { preset: "Custom" });
+    assert.strictEqual(lastState(h.published).preset, "Normal");
+
+    await command(h, { fps: 2, saturation: 130 });
+    assert.strictEqual(lastState(h.published).preset, "Custom", "hand-set values are the Custom preset");
+    await command(h, { preset: "Calm" });
+    assert.strictEqual(lastState(h.published).preset, "Calm");
+    assert.notStrictEqual(h.link.pacer.fps, 2);
+    await command(h, { preset: "Custom" });
+    assert.strictEqual(h.link.pacer.fps, 2, "Custom brings the hand-set values back");
+    assert.strictEqual(h.link.saturationPct, 130);
+    assert.strictEqual(lastState(h.published).preset, "Custom");
+    await h.link.stop();
+}
+
+async function testTheStripsBrightnessDimsEveryStream() {
+    const h = harness({ failing: false });
+    await h.link.start();
+    assert.strictEqual(h.link.brightness, 1, "no brightness reported means full");
+    await h.link.setMode(MODE_LABEL.sync);
+    const fed = feed(h.link);
+    await sleep(400);
+    const sent = [];
+    const frame = h.link.stream.frame.bind(h.link.stream);
+    h.link.stream.frame = (colors) => (sent.push(colors), frame(colors));
+    // The light card's slider, as z2m reports it: a delta with brightness only.
+    await h.link.onEntityState({ entity: { name: CONFIG.device }, payload: { brightness: 127 } });
+    assert.strictEqual(h.link.brightness, 0.5);
+    assert.strictEqual(h.link.output, "sync", "a brightness change is not a power press");
+    await sleep(600);
+    clearInterval(fed);
+    assert.ok(sent.length > 0, "frames keep flowing");
+    // `feed` alternates r=240 and r=10; at half brightness nothing can exceed 120.
+    assert.ok(sent.flat().every((c) => c.r <= 126), `a frame was not dimmed: ${Math.max(...sent.flat().map((c) => c.r))}`);
+    await h.link.stop();
+}
+
+async function testHueLinkBrightnessNeverInterruptsOrLights() {
+    const h = harness({ failing: false });
+    await h.link.start();
+    const toStrip = () => h.published.filter((p) => p.topic === `${CONFIG.device}/set`).map((p) => JSON.parse(p.payload));
+
+    // Dark, waiting for the TV: remembered, shown, and the strip stays dark.
+    await command(h, { brightness: 50 });
+    assert.strictEqual(h.link.brightness, 0.5);
+    assert.strictEqual(lastState(h.published).brightness, 50);
+    assert.strictEqual(h.link.arbiter.power, false, "a brightness change must not light a dark strip");
+    assert.ok(h.entityStates.some((p) => p.brightness === 127), "z2m/HA are told directly");
+    assert.ok(!toStrip().some((p) => "brightness" in p), "the strip is not");
+
+    // Streaming: frames are dimmed, still no command to the strip.
+    await h.link.setMode(MODE_LABEL.sync);
+    const fed = feed(h.link);
+    await sleep(400);
+    await command(h, { brightness: 20 });
+    await sleep(200);
+    clearInterval(fed);
+    assert.strictEqual(h.link.output, "sync");
+    assert.ok(!toStrip().some((p) => "brightness" in p), "no command to a streaming strip: that is the flash");
+
+    // Becoming an ordinary light: now the strip is told, once.
+    await h.link.setMode(MODE_LABEL.light);
+    assert.deepStrictEqual(toStrip().filter((p) => "brightness" in p), [{ brightness: 51 }]);
+    // As a light, the slider is an ordinary command.
+    await command(h, { brightness: 80 });
+    assert.deepStrictEqual(toStrip().at(-1), { brightness: 203 });
+    assert.strictEqual(lastState(h.published).brightness, 80);
+
+    // The strip's own report (light card, wall dimmer) is adopted.
+    await h.link.onEntityState({ entity: { name: CONFIG.device }, payload: { brightness: 254 } });
+    assert.strictEqual(lastState(h.published).brightness, 100);
+    await command(h, { brightness: "bright" });
+    assert.strictEqual(lastState(h.published).brightness, 100, "a value that is not a number is refused");
+    await h.link.stop();
+}
+
+async function testCustomEffectFromHaAndTheStripsColour() {
+    const h = harness({ failing: false });
+    await h.link.start();
+    const custom = t("custom.effect");
+    await command(h, { custom_style: t("style.flame"), custom_own: "#ff0000 #00ff00", custom_colours: t("custom.own") });
+    await command(h, { mode: "effect", effect: custom });
+    let st = lastState(h.published);
+    assert.strictEqual(st.effect, custom);
+    assert.strictEqual(st.custom_style, t("style.flame"));
+    assert.strictEqual(st.custom_colours, t("custom.own"));
+    assert.strictEqual(st.custom_own, "#ff0000 #00ff00");
+    await sleep(300);
+    assert.strictEqual(h.link.output, "effect");
+
+    // The button: the strip's own light colour, whatever its brightness.
+    const { x, y } = rgbToXy(0, 0, 255);
+    h.link.state = { get: () => ({ color_mode: "xy", color: { x, y }, brightness: 20 }) };
+    await command(h, { custom_colour: "add" });
+    assert.strictEqual(lastState(h.published).custom_own, "#ff0000 #00ff00 #0000ff");
+    // A strip that reports no colour adds nothing and says so.
+    h.link.state = { get: () => ({}) };
+    await command(h, { custom_colour: "add" });
+    assert.strictEqual(lastState(h.published).custom_own, "#ff0000 #00ff00 #0000ff");
+    assert.ok(h.log.error.some((m) => logLine("log.customColourNone").test(m)));
+    await command(h, { custom_colour: "clear" });
+    assert.strictEqual(lastState(h.published).custom_own, "");
+    // Refused, and the effect keeps running on what it had.
+    await command(h, { custom_own: "not colours", custom_style: "constructor" });
+    assert.strictEqual(lastState(h.published).custom_style, t("style.flame"));
+    assert.strictEqual(h.link.effects.selected, custom);
+    assert.ok(h.link.effects.active);
+    await h.link.stop();
+}
+
+async function testChoicesSurviveARestart() {
+    const dir = mkdtempSync(join(tmpdir(), "huelink-restart-"));
+    process.env.HUELINK_STATE = join(dir, "huelink.state.json");
+    try {
+        const a = harness({ failing: false });
+        await a.link.start();
+        assert.ok(!existsSync(process.env.HUELINK_STATE), "a start by itself writes nothing");
+        const effect = a.link.effectOptions[3];
+        await command(a, { fps: 2 });
+        await command(a, { preset: "Calm", effect, effect_speed: 150, custom_style: t("style.chase"), custom_own: "#123456" });
+        await a.link.stop();
+
+        const b = harness({ failing: false });
+        await b.link.start();
+        const st = lastState(b.published);
+        assert.strictEqual(st.preset, "Calm", "the selected preset is back");
+        assert.strictEqual(st.effect, effect);
+        assert.strictEqual(st.effect_speed, 150);
+        assert.strictEqual(st.custom_style, t("style.chase"));
+        assert.strictEqual(st.custom_own, "#123456");
+        // A restart is still not a choice: dark, waiting for the TV.
+        assert.strictEqual(st.power, "OFF");
+        assert.strictEqual(st.activity, "waiting");
+        await command(b, { preset: "Custom" });
+        assert.strictEqual(b.link.pacer.fps, 2, "and so is the Custom preset");
+        await b.link.stop();
+
+        // A file that cannot be read costs the saved choices, not the start.
+        writeFileSync(process.env.HUELINK_STATE, "{half");
+        const c = harness({ failing: false });
+        await c.link.start();
+        assert.strictEqual(lastState(c.published).preset, "Normal");
+        assert.ok(c.log.error.some((m) => logLine("log.stateUnreadable").test(m)));
+        await c.link.stop();
+    } finally {
+        delete process.env.HUELINK_STATE;
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
+
 const tests = [
     ["into the stream without an ON, so the strip does not flash", testIntoTheStreamWithoutAnOn],
     ["a streaming strip reads on, and one tap turns it off", testAStreamingStripReadsOn],
     ["effect and mode in one command", testEffectAndModeInOneCommand],
+    ["the Custom preset remembers hand-set values", testCustomPresetRemembersHandSetValues],
+    ["the strip's brightness dims every stream", testTheStripsBrightnessDimsEveryStream],
+    ["HueLink's brightness never interrupts a stream or lights a dark strip", testHueLinkBrightnessNeverInterruptsOrLights],
+    ["a custom effect from HA, with the strip's own colour", testCustomEffectFromHaAndTheStripsColour],
+    ["choices survive a restart", testChoicesSurviveARestart],
     ["trips and then goes quiet", testTripsAndGoesQuiet],
     ["a trip switches off, it does not light up", testTripDoesNotLightTheStrip],
     ["a healthy stream is left alone", testHealthyStreamUnaffected],

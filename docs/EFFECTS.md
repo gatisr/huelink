@@ -293,6 +293,12 @@ peak           1.0   point brightness
 brightness     1.0
 ```
 
+## The custom effect
+
+One entry is not in `effects.json`: **Custom**, appended by `huelink.mjs` at start and configured from Home Assistant (`huelink-lib/custom.mjs`). It defines nothing new. Its style is the generator of a catalogue effect of that kind, so only kinds that loaded are offered, and every other parameter is the generator's own default. Its colours are either the resolved palette of a catalogue effect or the user's own list of up to 8, typed in or read back from the strip's light colour (`xyToHex`, at full brightness: how bright it is shown is the strip's brightness, not the colour's). `ramp` (it ends) and `burst` (no palette) are left out.
+
+Changing it rebuilds the entry in place and, when it is the running effect, selects it again. It is saved in `huelink.state.json`. It has no `effect.<id>` key on purpose: those are the catalogue's, and a test holds that none is orphaned.
+
 ## Adding an effect
 
 1. If an existing `kind` can do it, add one entry to `effects.json` with a unique `id`, a `kind` and `params`, plus an `effect.<id>` name in `en.json` and `lv.json`. Done — no code.

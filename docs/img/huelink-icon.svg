@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="HueLink">
+  <defs>
+    <linearGradient id="halo" gradientUnits="userSpaceOnUse" x1="21" y1="86" x2="107" y2="31">
+      <stop offset="0" stop-color="#2f6bff"/>
+      <stop offset="0.35" stop-color="#b03bd6"/>
+      <stop offset="0.65" stop-color="#ff5a3c"/>
+      <stop offset="1" stop-color="#ffc83a"/>
+    </linearGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#12141b"/>
+  <!-- The glow behind the screen -->
+  <!-- Up one side, across the top, down the other: the strip does not run under the screen. -->
+  <path id="strip" d="M21 86 V40 a9 9 0 0 1 9 -9 H98 a9 9 0 0 1 9 9 V86" fill="none" stroke="url(#halo)" stroke-width="12" stroke-linecap="round" filter="url(#soft)"/>
+  <path d="M21 86 V40 a9 9 0 0 1 9 -9 H98 a9 9 0 0 1 9 9 V86" fill="none" stroke="url(#halo)" stroke-width="3" stroke-linecap="round"/>
+  <!-- The screen -->
+  <rect x="27" y="37" width="74" height="46" rx="5" fill="#07080c"/>
+  <!-- Stand -->
+  <rect x="56" y="89" width="16" height="7" fill="#2a2e3a"/>
+  <rect x="42" y="96" width="44" height="5" rx="2.5" fill="#2a2e3a"/>
+</svg>

@@ -12,7 +12,8 @@
 import { MODES } from "./arbiter.mjs";
 import { CONFIG } from "./config.mjs";
 import { SATURATION_PCT } from "./huepack.mjs";
-import { ACTIVITIES, KNOBS, MODE_LABEL, PRESETS, categoryOf } from "./huelink-ui.mjs";
+import { ACTIVITIES, EFFECTS_DEVICE, KNOBS, MODE_LABEL, PRESETS, PRESET_OPTIONS, SYNC_DEVICE, categoryOf } from "./huelink-ui.mjs";
+import { MAX_OWN_COLOURS } from "./custom.mjs";
 import { t } from "./i18n/index.mjs";
 import { LIMITS } from "./pacer.mjs";
 
@@ -26,6 +27,8 @@ export const RETIRED = [
     ["sensor", "sync_status"],
     ["sensor", "source"],
     ["sensor", "mode"],
+    // The strip's own brightness is the brightness of every mode since 1.4.0.
+    ["number", "effect_brightness"],
 ];
 
 /**
@@ -35,7 +38,7 @@ export const RETIRED = [
  * select's "Off" option is not one: it is a view of the same power flag, so
  * the one control that knows what the strip is doing can also stop it.
  */
-export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic, device, effectOptions }) {
+export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic, device, effectOptions, custom = null }) {
     /** A `number` slider entity: `[kind, id, payload]` like the literals below. */
     const slider = (id, haKey, { value, command, limits, unit, icon, expert }) => [
         "number",
@@ -80,9 +83,8 @@ export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic,
         ],
         [
             // Beside the mode select. Moving any slider turns the state
-            // into "Custom", which must be an option because HA logs an
-            // error for a select state outside its options; choosing it
-            // does nothing.
+            // into "Custom", which remembers those values: choosing it
+            // brings them back.
             "select",
             "preset",
             {
@@ -92,7 +94,7 @@ export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic,
                 value_template: "{{ value_json.preset }}",
                 command_topic: commandTopic,
                 command_template: '{"preset": {{ value | tojson }}}',
-                options: PRESETS.map((p) => p.name),
+                options: PRESET_OPTIONS,
                 icon: "mdi:playlist-star",
                 device,
             },
@@ -109,25 +111,6 @@ export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic,
                 command_template: '{"effect": {{ value | tojson }}}',
                 options: effectOptions,
                 icon: "mdi:auto-fix",
-                device,
-            },
-        ],
-        [
-            "number",
-            "effect_brightness",
-            {
-                name: t("ha.effectBrightness"),
-                unique_id: `huelink_${CONFIG.name}_effect_brightness`,
-                state_topic: stateTopic,
-                value_template: "{{ value_json.effect_brightness }}",
-                command_topic: commandTopic,
-                command_template: '{"effect_brightness": {{ value | int }}}',
-                min: 1,
-                max: 100,
-                step: 1,
-                unit_of_measurement: "%",
-                mode: "slider",
-                icon: "mdi:brightness-6",
                 device,
             },
         ],
@@ -152,6 +135,28 @@ export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic,
                 unit_of_measurement: "%",
                 mode: "slider",
                 icon: "mdi:speedometer",
+                device,
+            },
+        ],
+        [
+            // The strip's own brightness, shown here too: it dims every
+            // mode. Through `/command`, not the strip's `/set`, so a stream
+            // is not interrupted and a dark strip is not lit by it.
+            "number",
+            "brightness",
+            {
+                name: t("ha.brightness"),
+                unique_id: `huelink_${CONFIG.name}_brightness`,
+                state_topic: stateTopic,
+                value_template: "{{ value_json.brightness }}",
+                command_topic: commandTopic,
+                command_template: '{"brightness": {{ value | int }}}',
+                min: 1,
+                max: 100,
+                step: 1,
+                unit_of_measurement: "%",
+                mode: "slider",
+                icon: "mdi:brightness-6",
                 device,
             },
         ],
@@ -310,12 +315,55 @@ export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic,
         }),
     ];
 
+    // The custom effect: a style, where its colours come from, and the own
+    // colour list with two buttons that fill it from the strip's own light
+    // colour (the HA colour wheel, with the strip as the preview).
+    if (custom) {
+        const base = (id, haKey, icon) => ({
+            name: t(`ha.${haKey}`),
+            unique_id: `huelink_${CONFIG.name}_${id}`,
+            command_topic: commandTopic,
+            icon,
+            device,
+        });
+        const select = (id, haKey, options, icon) => [
+            "select",
+            id,
+            {
+                ...base(id, haKey, icon),
+                state_topic: stateTopic,
+                value_template: `{{ value_json.${id} }}`,
+                command_template: `{"${id}": {{ value | tojson }}}`,
+                options,
+            },
+        ];
+        const button = (id, haKey, action, icon) => ["button", id, { ...base(id, haKey, icon), payload_press: JSON.stringify({ custom_colour: action }) }];
+        entities.push(
+            select("custom_style", "customStyle", custom.styles, "mdi:shape-outline"),
+            select("custom_colours", "customColours", custom.colours, "mdi:palette-swatch"),
+            [
+                "text",
+                "custom_own",
+                {
+                    ...base("custom_own", "customOwn", "mdi:format-color-fill"),
+                    state_topic: stateTopic,
+                    value_template: "{{ value_json.custom_own }}",
+                    command_template: '{"custom_own": {{ value | tojson }}}',
+                    max: MAX_OWN_COLOURS * 8,
+                    pattern: "^(#[0-9a-fA-F]{6}[ ,;]*)*$",
+                },
+            ],
+            button("custom_colour_add", "customAdd", "add", "mdi:eyedropper-plus"),
+            button("custom_colour_clear", "customClear", "clear", "mdi:eyedropper-off"),
+        );
+    }
+
     // With no effects loaded, a `select` with an empty option list is just
     // an error in the HA log, so the entity is simply not published.
     if (!effectOptions.length) {
         entities = entities.filter(([kind, id]) => !(kind === "select" && id === "effect"));
     }
-    // Same for presets: an unreadable `presets.json` leaves only "Custom".
+    // Same for presets: with an unreadable `presets.json` there is nothing to choose between.
     if (!PRESETS.length) {
         entities = entities.filter(([kind, id]) => !(kind === "select" && id === "preset"));
     }
@@ -331,6 +379,10 @@ export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic,
     const slug = CONFIG.name.toLowerCase().replace(/[^a-z0-9_]+/g, "_");
     // z2m's own `bridge/state`: without it every card keeps its last state while z2m is down.
     const availability = [{ topic: availabilityTopic, value_template: "{{ value_json.state }}" }];
+    // Two more devices, linked to the main one: see `SYNC_DEVICE` in huelink-ui.mjs.
+    const linked = (key, name) => ({ ...device, identifiers: [`${device.identifiers[0]}_${key}`], name, via_device: device.identifiers[0] });
+    const sync = linked("sync", t("ha.deviceSync"));
+    const effects = linked("effects", t("ha.deviceEffects"));
     return entities.map(([kind, id, cfg]) => {
         const category = categoryOf(id);
         return [
@@ -338,6 +390,7 @@ export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic,
             id,
             {
                 ...cfg,
+                device: SYNC_DEVICE.includes(id) ? sync : EFFECTS_DEVICE.includes(id) ? effects : device,
                 default_entity_id: `${kind}.${slug}_${id}`,
                 availability,
                 ...(category ? { entity_category: category } : {}),

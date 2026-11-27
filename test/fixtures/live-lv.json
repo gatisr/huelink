@@ -109,7 +109,6 @@
   "ha": {
     "mode": "Režīms",
     "effect": "Efekts",
-    "effectBrightness": "Efekta spilgtums",
     "effectSpeed": "Efekta ātrums",
     "status": "Statuss",
     "fpsReal": "Kadri sekundē",

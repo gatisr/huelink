@@ -87,8 +87,9 @@ const discovery = (published) => {
     return found;
 };
 
-test("grouping: five main controls incl. status, the rest config or diagnostic, no overlap", () => {
-    assert.deepEqual(MAIN, ["mode", "effect", "preset", "effect_speed", "status"]);
+test("grouping: everyday controls are main, expert knobs config, readings diagnostic, no overlap", () => {
+    for (const name of ["mode", "brightness", "status", "preset", "effect", "effect_speed", "custom_style"]) assert.ok(MAIN.includes(name), name);
+    for (const name of ["fps", "budget", "smoothing"]) assert.ok(CONFIGURATION.includes(name), name);
     for (const name of MAIN) assert.equal(categoryOf(name), undefined, name);
     assert.equal(categoryOf("huelink_status"), undefined);
     for (const name of CONFIGURATION) assert.equal(categoryOf(name), "config", name);
@@ -173,6 +174,26 @@ test("the published activity is one of the sensor's options", async (t) => {
     assert.ok(cfg.options.includes(state.activity));
 });
 
+test("the custom effect and the Custom preset are offered in HA", async (t) => {
+    const h = await started();
+    t.after(() => h.link.stop());
+
+    const configs = discovery(h.published);
+    assert.equal(configs.get("preset").options.at(-1), "Custom");
+    assert.equal(configs.get("effect").options.at(-1), tr("custom.effect"));
+    assert.ok(configs.get("custom_style").options.includes(tr("style.flame")));
+    assert.equal(configs.get("custom_colours").options[0], tr("custom.own"));
+    // The text field accepts what the extension accepts, the empty list included.
+    const pattern = new RegExp(configs.get("custom_own").pattern);
+    for (const ok of ["", "#ff0000", "#ff0000 #00FF88, #0000ff"]) assert.ok(pattern.test(ok), ok);
+    for (const bad of ["red", "#fff", "#ff0000 x"]) assert.ok(!pattern.test(bad), bad);
+    assert.equal(configs.get("custom_colour_add").payload_press, '{"custom_colour":"add"}');
+    assert.equal(configs.get("custom_colour_clear").payload_press, '{"custom_colour":"clear"}');
+    // One brightness: the strip's own. The old slider is removed from HA, not left dead.
+    assert.ok(!configs.has("effect_brightness"));
+    assert.ok(h.published.some((p) => p.topic.endsWith("number/huelink_" + CONFIG.name + "/effect_brightness/config") && p.payload === ""));
+});
+
 test("nothing read-only is published as a setting", async (t) => {
     const h = await started();
     t.after(() => h.link.stop());
@@ -192,9 +213,16 @@ test("our device points at the strip's z2m device", async (t) => {
     const h = await started();
     t.after(() => h.link.stop());
 
-    for (const [id, payload] of discovery(h.published)) {
+    const main = `huelink_${CONFIG.name}`;
+    const where = { mode: main, brightness: main, status: main, activity: main, preset: `${main}_sync`, fps: `${main}_sync`, occupancy: `${main}_sync`, effect: `${main}_effects`, custom_style: `${main}_effects` };
+    const configs = discovery(h.published);
+    for (const [id, device] of Object.entries(where)) assert.deepEqual(configs.get(id).device.identifiers, [device], id);
+    for (const [id, payload] of configs) {
+        const own = payload.device.identifiers[0];
         // z2m device identifiers use the literal `zigbee2mqtt` prefix, not the base topic.
-        assert.equal(payload.device.via_device, `zigbee2mqtt_${DEVICE_ID}`, id);
-        assert.deepEqual(payload.device.identifiers, [`huelink_${CONFIG.name}`], id);
+        // The main device hangs off the strip; sync and effects hang off the main device.
+        assert.equal(payload.device.via_device, own === main ? `zigbee2mqtt_${DEVICE_ID}` : main, id);
+        assert.ok([main, `${main}_sync`, `${main}_effects`].includes(own), `${id} is on an unknown device ${own}`);
+        assert.equal(typeof payload.device.name, "string", id);
     }
 });

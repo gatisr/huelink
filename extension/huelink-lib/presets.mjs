@@ -49,7 +49,8 @@ export function loadPresets(logger = console, file = join(HERE, "presets.json"))
             logger.error(`[huelink] ${t("log.presetBadId", { entry: JSON.stringify(entry) })}`);
             continue;
         }
-        if (out.some((p) => p.id === id || p.name === name)) {
+        // "Custom" is the slot for hand-set values (`CUSTOM_PRESET`), never a catalogue entry.
+        if (name === "Custom" || out.some((p) => p.id === id || p.name === name)) {
             logger.error(`[huelink] ${t("log.presetDuplicate", { id })}`);
             continue;
         }

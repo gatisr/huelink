@@ -24,13 +24,15 @@ import { Breaker } from "./huelink-lib/breaker.mjs";
 import { RETIRED, discoveryEntities } from "./huelink-lib/discovery.mjs";
 import { CONFIG, CONFIG_ERRORS, CONFIG_FILE, CONFIG_PATH, CONFIG_WARNINGS, loadConfig } from "./huelink-lib/config.mjs";
 import { EffectEngine, loadEffects } from "./huelink-lib/effects/index.mjs";
-import { clampSaturationPct, saturate } from "./huelink-lib/huepack.mjs";
+import { CustomEffect, MAX_OWN_COLOURS, loadState, saveState, stateFile } from "./huelink-lib/custom.mjs";
+import { clampSaturationPct, dim, miredToXy, saturate, xyToHex } from "./huelink-lib/huepack.mjs";
 import { t } from "./huelink-lib/i18n/index.mjs";
 import { toFinite } from "./huelink-lib/num.mjs";
 import { Pacer, TUNABLE } from "./huelink-lib/pacer.mjs";
 import { KNOB_KEYS, landed, match } from "./huelink-lib/presets.mjs";
 import { StallWatch, Throttle } from "./huelink-lib/stallwatch.mjs";
 import {
+    CUSTOM_PRESET,
     KNOBS,
     MODE_BY_LABEL,
     MODE_LABEL,
@@ -55,7 +57,7 @@ import {
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.3.4";
+export const VERSION = "1.4.0";
 
 /** Knobs with a slider: the file only sets their startup value (a live reload would fight the slider). */
 const SLIDER_OWNED = new Set(["occupancyBudget", ...KNOBS.map((k) => k.knob)]);
@@ -329,6 +331,21 @@ export default class HueLink {
         this.selfState = [];
         /** When `showOn` last published its display-only "ON"; 0 once its echo is back. */
         this.shownOnAt = 0;
+        /**
+         * Brightness of every stream frame, 0.01..1: the strip's OWN light
+         * brightness, so one slider (the light card's) dims light, effects
+         * and sync alike. See `setBrightness`.
+         */
+        this.brightness = 1;
+        /** The strip itself has not been told the current brightness yet; see `setBrightnessPct`. */
+        this.levelDirty = false;
+        /** The user-made effect (`huelink-lib/custom.mjs`); built in `start()` from the loaded catalogue. */
+        this.custom = null;
+        /** The Custom preset: the knob values last set by hand, or `null` before the first. */
+        this.customKnobs = null;
+        /** Where choices are remembered across a restart, `null` for nowhere; and what was last written. */
+        this.stateFile = null;
+        this.savedState = null;
     }
 
     /** Transport: the real Zigbee endpoint. */
@@ -376,6 +393,9 @@ export default class HueLink {
         const endpoint = device.endpoint();
 
         this.effects.effects = await loadEffects(this.logger);
+        // One more entry, built from the catalogue's own generators and palettes.
+        this.custom = new CustomEffect(this.effects.effects);
+        if (this.custom.available) this.effects.effects.push(this.custom.entry);
         this.logger.info(
             `[huelink] ${t("log.effectsLoaded", {
                 count: this.effects.effects.length,
@@ -395,6 +415,8 @@ export default class HueLink {
                 names: PRESETS.map((p) => p.name).join(", "),
             })}`,
         );
+
+        this.#restore();
 
         this.stream = new HueStream({
             transport: this.zclTransport(endpoint),
@@ -431,6 +453,7 @@ export default class HueLink {
         // `ON` arriving in the gap would hit `setPower(true)` and clear the
         // arming we just set.
         this.stripState = String(this.state.get(device)?.state ?? "OFF").toUpperCase() === "ON" ? "ON" : "OFF";
+        this.setBrightness(this.state.get(device)?.brightness);
         if (this.stripState === "ON") {
             this.logger.info(`[huelink] ${t("log.wasLit")}`);
             await this.light("OFF");
@@ -761,7 +784,7 @@ export default class HueLink {
                 // compares the colours that will actually be sent. At 100 %
                 // `saturate` returns the same array untouched.
                 // Allocates a new array unless neutral; negligible at <= 25 fps.
-                const shown = saturate(colors, this.saturationPct / 100);
+                const shown = dim(saturate(colors, this.saturationPct / 100), this.brightness);
                 // Three levers in one call: pace, duty cap and delta
                 // suppression. `null` means "do not send this frame" and is not
                 // an error, so `failures` is left alone. See docs/PACING.md.
@@ -1087,6 +1110,7 @@ export default class HueLink {
             // user chose light themselves.
             await this.stream.stop();
             if (!(await this.light("ON"))) return false;
+            await this.#pushBrightness();
         } else if (!this.stream.running) {
             // Into the stream WITHOUT an "on". Tested on the strip: frames
             // light an off strip by themselves, and an "on" (before or after
@@ -1264,15 +1288,161 @@ export default class HueLink {
         return { ...Object.fromEntries(PRESET_TUNABLES.concat("fps").map((key) => [key, this.pacer[key]])), saturationPct: this.saturationPct };
     }
 
-    /** Name of the preset matching the live knobs, or `null` (no selection). */
+    /** Name of the preset matching the live knobs; hand-set values are `CUSTOM_PRESET`. */
     currentPreset() {
-        return match(PRESETS, this.knobValues(), this.pacer.maxFps)?.name ?? null;
+        return match(PRESETS, this.knobValues(), this.pacer.maxFps)?.name ?? CUSTOM_PRESET;
+    }
+
+    /**
+     * The strip's own brightness (z2m's 0..254) is the brightness of every
+     * mode. Frames carry their own brightness and ignore the strip's level,
+     * so it is applied to them here (`tick`). A change mid-stream also reaches
+     * the strip itself through z2m, which may show its ordinary light until
+     * the next frame, so that frame is sent at once.
+     */
+    setBrightness(value) {
+        const level = toFinite(value);
+        if (level === null) return false;
+        const next = Math.min(Math.max(level / 254, 0.01), 1);
+        if (next === this.brightness) return false;
+        this.brightness = next;
+        if (this.stream?.running) this.pacer.forceNext();
+        return true;
+    }
+
+    /**
+     * Brightness from HueLink's own slider, in percent.
+     *
+     * The strip is told only while it is lit as an ordinary light. During a
+     * stream it would show its ordinary light until the next frame, and dark
+     * it would switch itself on, so there the frames are dimmed and z2m/HA
+     * are told directly (the light card then shows the same value). The strip
+     * catches up when it next becomes a light: `#pushBrightness`.
+     */
+    async setBrightnessPct(value) {
+        const pct = toFinite(value);
+        if (pct === null) return false;
+        const level = Math.round(Math.min(Math.max(pct, 1), 100) * 2.54);
+        this.setBrightness(level);
+        this.levelDirty = true;
+        if (this.arbiter.pick().mode === MODE_LIGHT) await this.#pushBrightness();
+        else {
+            try {
+                await this.publishEntityState(this.device, { brightness: level });
+            } catch (e) {
+                this.logger.error(`[huelink] ${t("log.exposesFailed", { error: e.message })}`);
+            }
+        }
+        return true;
+    }
+
+    /** Give the strip the brightness it was not told while streaming or dark. An ordinary z2m command. */
+    async #pushBrightness() {
+        if (!this.levelDirty) return;
+        this.levelDirty = false;
+        try {
+            await this.mqtt.publish(`${CONFIG.device}/set`, JSON.stringify({ brightness: Math.round(this.brightness * 254) }), { skipReceive: false });
+        } catch (e) {
+            this.levelDirty = true;
+            this.logger.error(`[huelink] ${t("log.lightFailed", { state: "brightness", error: e.message })}`);
+        }
+    }
+
+    /**
+     * What the user chose in HA, read back after a restart: the Custom preset
+     * and effect, the selected preset and effect, the effect speed. Not the
+     * mode or the power: a restart is not a choice (docs/DESIGN.md). Wins over
+     * the config file's starting values, because it is the later decision.
+     */
+    #restore() {
+        this.stateFile = stateFile();
+        this.savedState = null;
+        const saved = loadState(this.stateFile, this.logger);
+        if (!saved) return;
+        const knobs = saved.custom;
+        if (knobs && typeof knobs === "object" && KNOB_KEYS.every((key) => toFinite(knobs[key]) !== null)) {
+            this.customKnobs = Object.fromEntries(KNOB_KEYS.map((key) => [key, toFinite(knobs[key])]));
+        }
+        this.custom.restore(saved.customEffect);
+        if (typeof saved.preset === "string" && (saved.preset !== CUSTOM_PRESET || this.customKnobs)) this.applyPreset(saved.preset);
+        if (this.effectOptions.includes(saved.effect)) this.effects.select(saved.effect);
+        this.effects.setSpeed(saved.effectSpeed);
+        this.logger.info(`[huelink] ${t("log.stateRestored", { file: this.stateFile, preset: this.currentPreset(), effect: this.effects.selected })}`);
+    }
+
+    /**
+     * Keep the Custom preset and the state file current. Called from
+     * `publishState`, the one point every change passes through. Values that
+     * match no catalogue preset ARE the Custom preset, so there is nothing to
+     * press to save them. The file is written only when its content changed.
+     */
+    #remember() {
+        if (!this.custom) return; // before `start()` there is nothing chosen yet
+        const live = this.knobValues();
+        if (!match(PRESETS, live, this.pacer.maxFps)) this.customKnobs = live;
+        if (!this.stateFile) return;
+        const json = JSON.stringify({
+            preset: this.currentPreset(),
+            custom: this.customKnobs,
+            effect: this.effects.selected,
+            effectSpeed: Math.round(this.effects.speed * 100),
+            customEffect: this.custom.snapshot(),
+        });
+        // The first call only takes the baseline: a start changes nothing, so
+        // it writes nothing, and an install nobody has touched from HA keeps
+        // starting from its config file.
+        const first = this.savedState === null;
+        if (json === this.savedState) return;
+        this.savedState = json;
+        if (!first) saveState(this.stateFile, json, this.logger);
+    }
+
+    /** The custom effect changed: if it is the one running, start it again on the new settings. */
+    #customChanged() {
+        if (this.effects.selected === this.custom.entry.name) this.effects.select(this.custom.entry.name);
+    }
+
+    /** The strip's own light colour as "#rrggbb", from z2m's state cache; `null` when it reports none. */
+    #stripColour() {
+        const s = this.state.get(this.device) ?? {};
+        const mired = toFinite(s.color_temp);
+        if (s.color_mode === "color_temp" && mired > 0) {
+            const { x, y } = miredToXy(mired);
+            return xyToHex(x, y);
+        }
+        const x = toFinite(s.color?.x);
+        const y = toFinite(s.color?.y);
+        return x !== null && y !== null ? xyToHex(x, y) : null;
+    }
+
+    /** `custom_*` keys of a command. Every refusal is said out loud, like the knobs. */
+    #applyCustom(body) {
+        if (!this.custom?.available || !Object.keys(body).some((key) => key.startsWith("custom_"))) return;
+        const c = this.custom;
+        const refuse = (field, value) => this.logger.error(`[huelink] ${t("log.customRefused", { field, value: String(value).slice(0, 80) })}`);
+        if ("custom_style" in body && !c.setStyle(body.custom_style)) refuse("custom_style", body.custom_style);
+        if ("custom_own" in body && !c.setOwn(body.custom_own)) refuse("custom_own", body.custom_own);
+        if ("custom_colours" in body && !c.setColours(body.custom_colours)) refuse("custom_colours", body.custom_colours);
+        if (body.custom_colour === "clear") c.setOwn("");
+        else if (body.custom_colour === "add") {
+            const hex = this.#stripColour();
+            if (!hex) this.logger.error(`[huelink] ${t("log.customColourNone")}`);
+            else if (!c.addOwn(hex)) this.logger.error(`[huelink] ${t("log.customColoursFull", { max: MAX_OWN_COLOURS })}`);
+        } else if ("custom_colour" in body) refuse("custom_colour", body.custom_colour);
+        this.#customChanged();
     }
 
     /** Apply a preset by name or id; sliders keep working afterwards. */
     applyPreset(value) {
         const wanted = String(value);
-        const preset = PRESETS.find((p) => p.id === wanted || p.name === wanted);
+        if (wanted === CUSTOM_PRESET && !this.customKnobs) {
+            this.logger.info(`[huelink] ${t("log.presetNoCustom")}`);
+            return;
+        }
+        const preset =
+            wanted === CUSTOM_PRESET
+                ? { id: "custom", name: CUSTOM_PRESET, knobs: this.customKnobs }
+                : PRESETS.find((p) => p.id === wanted || p.name === wanted);
         if (!preset) {
             this.logger.error(`[huelink] ${t("log.unknownPreset", { value: wanted.slice(0, 40).replace(/[\x00-\x1f\x7f]/g, "?") })}`);
             return;
@@ -1449,9 +1619,8 @@ export default class HueLink {
         // said out loud. Silence would be the worst of both: the knob appears
         // to have been set, the published state disagrees with it, and nothing
         // anywhere says why. See huelink-lib/num.mjs for what counts as a number.
-        if ("effect_brightness" in body) {
-            this.#refused("effect_brightness", body.effect_brightness, this.effects.setBrightness(body.effect_brightness));
-        }
+        this.#applyCustom(body);
+        if ("brightness" in body) this.#refused("brightness", body.brightness, await this.setBrightnessPct(body.brightness));
         if ("effect_speed" in body) {
             this.#refused("effect_speed", body.effect_speed, this.effects.setSpeed(body.effect_speed));
         }
@@ -1595,6 +1764,14 @@ export default class HueLink {
         // while the first is still in flight, and `finally` clears it before
         // the echo arrives at all. Reading the delta needs no bookkeeping and
         // cannot race. See docs/DESIGN.md.
+        // Before the power checks: a brightness change usually comes alone.
+        // From the delta, like `state` below, so only a real change counts.
+        // A value that DIFFERS from ours is the strip's own (light card, wall
+        // dimmer), so the two agree again; the same value is our own echo.
+        if (payload && "brightness" in payload && this.setBrightness(payload.brightness)) {
+            this.levelDirty = false;
+            await this.publishState();
+        }
         const value = String(payload?.state ?? "").toUpperCase();
         if (value !== "ON" && value !== "OFF") return;
         // Our own display-only "ON" coming back (see `showOn`). No strip acked
@@ -1781,6 +1958,7 @@ export default class HueLink {
         const stats = this.stats();
         // Single convergence point for slider, MQTT command and config reload.
         this.reportCeiling();
+        this.#remember();
         try {
             await this.#publishRetained(stats);
         } catch (e) {
@@ -1838,9 +2016,14 @@ export default class HueLink {
                 // the same fact translated for people. `gave_up` holds through
                 // an off or a manual try until a recovery is proven.
                 breaker: this.breaker.state,
+                // Percent of the strip's own brightness, which dims every mode.
+                brightness: Math.round(this.brightness * 100),
                 effect: this.effects.selected,
-                effect_brightness: Math.round(this.effects.brightness * 100),
                 effect_speed: Math.round(this.effects.speed * 100),
+                // The custom effect, as the HA selects and text field show it.
+                custom_style: this.custom?.styleLabel ?? null,
+                custom_colours: this.custom?.colourLabel ?? null,
+                custom_own: this.custom?.own.join(" ") ?? "",
                 fps: this.pacer.fps,
                 fps_real: this.fpsReal,
                 // Localised name: the HA select's state must equal one of its options.
@@ -1894,6 +2077,7 @@ export default class HueLink {
             availabilityTopic: `${base}/bridge/state`,
             device,
             effectOptions: this.effectOptions,
+            custom: this.custom?.available ? { styles: this.custom.styleOptions, colours: this.custom.colourOptions } : null,
         });
         for (const [kind, id, cfg] of entities) {
             await this.mqtt.publish(`${kind}/huelink_${CONFIG.name}/${id}/config`, JSON.stringify(cfg), {

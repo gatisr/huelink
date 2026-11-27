@@ -4,6 +4,35 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.4.0
+
+Your own preset and your own effect, set up in Home Assistant and kept across a restart. One brightness for every mode.
+
+### Added
+
+- **Custom preset.** Moving any picture slider makes the selection Custom; choosing Custom later brings those values back. Nothing to save.
+- **Custom effect**, last in the effect list. Pick a style (Wave, Breathe, Flame, Chase, Pulse, Twinkle, Strobe, Solid) and colours: those of a built-in effect, or your own (up to 8).
+- **Own colours from the phone:** pick a colour on the strip's light card, press "Add the strip's colour". Or type them: `#ff0000 #00ff88`.
+- **Choices survive a restart:** selected preset and effect, effect speed, Custom preset, custom effect. Kept in `huelink.state.json` next to the config file.
+- **Brightness on the HueLink device.** The same value as the light card, but it does not interrupt a stream (frames are dimmed, the strip gets no command) and does not switch a dark strip on.
+
+### Changed
+
+- **The strip's own brightness now dims effects and sync too.** The light card's slider is the one brightness.
+- "Effect brightness" is removed (HA entity and `effect_brightness` command key).
+- The preset select shows Custom instead of nothing when no preset matches.
+- **Three HA devices instead of one:** HueLink (mode, brightness, status), HueLink Sync (preset and picture tuning), HueLink Effects (effect and the custom effect). Entity ids are unchanged.
+- Saturation and the custom effect entities are controls, not configuration.
+- A saved preset wins over the config file's starting values at start. Delete `huelink.state.json` to go back to them.
+
+### Notes
+
+- Mode and power are not restored: after a restart the strip is off and waits for the TV, as before.
+- If the strip was left dim as a light, effects and sync are dim too: raise the light's brightness.
+- Changing brightness on the strip's **light card** while streaming also reaches the strip itself and may show its ordinary light for a moment; the next frame is sent at once to keep that short. HueLink's own Brightness does not. Not yet confirmed on a strip.
+- Reload the MQTT integration after upgrading: HA reads an entity's category and device when it registers it.
+- `huelink-lib/` changed: restart zigbee2mqtt. `huelink_version` shows 1.4.0 when it has.
+
 ## 1.3.4
 
 The Home Assistant Mode select can now turn the strip off, and the light entity reads "on" while the strip streams. Its entities are also easier to build dashboards on.

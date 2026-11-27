@@ -55,7 +55,7 @@ import {
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.3.3";
+export const VERSION = "1.3.4";
 
 /** Knobs with a slider: the file only sets their startup value (a live reload would fight the slider). */
 const SLIDER_OWNED = new Set(["occupancyBudget", ...KNOBS.map((k) => k.knob)]);
@@ -327,6 +327,8 @@ export default class HueLink {
          * both. See `#wasSelfState`.
          */
         this.selfState = [];
+        /** When `showOn` last published its display-only "ON"; 0 once its echo is back. */
+        this.shownOnAt = 0;
     }
 
     /** Transport: the real Zigbee endpoint. */
@@ -1029,6 +1031,31 @@ export default class HueLink {
     }
 
     /**
+     * Make z2m/HA show the strip as on WITHOUT telling the strip. A stream
+     * starts with no "on" (it flashes the strip), which left the light entity
+     * reading "off" beside a lit strip, and a tap on a card that reads "off"
+     * sends exactly that "on".
+     *
+     * `stripState` is deliberately untouched: the strip's own on/off is still
+     * off, so `light("ON")` must still go out when the stream ends in light.
+     * Every way out of a stream sends a real, forced "off" or a real "on", so
+     * this never outlives the stream it describes.
+     *
+     * shortcut: a strip that trips while unreachable gets no "off" at all and
+     * keeps reading "on"; publish a display-only "off" there if that matters.
+     */
+    async showOn() {
+        if (this.stripState === "ON") return;
+        this.shownOnAt = Date.now();
+        try {
+            await this.publishEntityState(this.device, { state: "ON" });
+        } catch (e) {
+            this.shownOnAt = 0;
+            this.logger.error(`[huelink] ${t("log.exposesFailed", { error: e.message })}`);
+        }
+    }
+
+    /**
      * Put the strip into `mode`. The ONLY place `this.output` changes, so the
      * published output and what the strip was actually told cannot drift.
      *
@@ -1064,9 +1091,10 @@ export default class HueLink {
             // Into the stream WITHOUT an "on". Tested on the strip: frames
             // light an off strip by themselves, and an "on" (before or after
             // the start) flashes its last ordinary colour, mid-film after
-            // every trip. The price: z2m/HA show the light entity as off
-            // while it streams.
+            // every trip. z2m/HA are told separately, without the strip
+            // hearing of it: see `showOn`.
             await this.stream.start();
+            await this.showOn();
         }
         this.output = mode;
         return true;
@@ -1394,14 +1422,15 @@ export default class HueLink {
             const value = String(body.power).toUpperCase();
             await this.setPower(value === "TOGGLE" ? !this.arbiter.power : value === "ON");
         }
-        if ("mode" in body) await this.setMode(body.mode);
-        // Before the individual knobs: preset first, explicit values win.
-        if ("preset" in body) this.applyPreset(body.preset);
         if ("effect" in body) {
             // Selecting an effect does NOT change the mode: it answers "which
             // effect", not "is an effect running". An unknown name is refused
             // rather than applied, because the engine would switch to "no
             // effect" and leave effect mode on but empty.
+            //
+            // Before `mode`, so `{"mode": "effect", "effect": X}` (a one-tap
+            // dashboard button) enters effect mode on X, and works even when
+            // no effect was selected yet, where `setMode` would refuse.
             const wanted = String(body.effect);
             if (!this.effectOptions.includes(wanted)) {
                 this.logger.error(`[huelink] ${t("log.unknownEffect", { effect: wanted })}`);
@@ -1413,6 +1442,9 @@ export default class HueLink {
                 this.logger.error(`[huelink] ${t("log.effectSelectFailed", { effect: wanted })}`);
             }
         }
+        if ("mode" in body) await this.setMode(body.mode);
+        // Before the individual knobs: preset first, explicit values win.
+        if ("preset" in body) this.applyPreset(body.preset);
         // Every setter below REFUSES a value it cannot read, and a refusal is
         // said out loud. Silence would be the worst of both: the knob appears
         // to have been set, the published state disagrees with it, and nothing
@@ -1565,6 +1597,13 @@ export default class HueLink {
         // cannot race. See docs/DESIGN.md.
         const value = String(payload?.state ?? "").toUpperCase();
         if (value !== "ON" && value !== "OFF") return;
+        // Our own display-only "ON" coming back (see `showOn`). No strip acked
+        // it, so it is neither proof of life for the breaker below nor news
+        // for `stripState`. One echo per publish, like `#wasSelfState`.
+        if (value === "ON" && Date.now() - this.shownOnAt < SELF_ECHO_MS) {
+            this.shownOnAt = 0;
+            return;
+        }
         // z2m reports a state only once the strip acked it, so an "ON" here,
         // even the echo of our own, proves the strip is back on the network:
         // that clears the give-up alert. It does not prove frames get through,
@@ -1621,17 +1660,42 @@ export default class HueLink {
      * switches; with one mode that question no longer exists.
      */
     status() {
+        const mode = this.breaker.tripped;
+        switch (this.activity()) {
+            case "gave_up":
+                return t("status.trippedManual", { mode });
+            case "tripped":
+                return t("status.tripped", { mode });
+            case "waiting":
+                return t("status.waitingTv");
+            case "off":
+                return t("status.off");
+            case "effect":
+                return t("status.effect", { effect: this.effects.selected });
+            case "sync":
+                return t("status.sync");
+            default:
+                return MODE_LABEL.light;
+        }
+    }
+
+    /**
+     * The same decision as `status`, as a fixed word from `ACTIVITIES`
+     * (`huelink-ui.mjs`), so card conditions and automations do not match
+     * translated text. `status` is built from this, so the two cannot drift.
+     */
+    activity() {
         // Both reasons the strip went dark ON ITS OWN come first. Otherwise a
         // plain "off" would hide them, and the user would see a dark strip with
         // not a word about what happened.
-        if (this.breaker.needsManualResume) return t("status.trippedManual", { mode: this.breaker.tripped });
-        if (this.breaker.tripped) return t("status.tripped", { mode: this.breaker.tripped });
-        if (this.armed === MODE_SYNC) return t("status.waitingTv");
-        if (!this.arbiter.power) return t("status.off");
-        if (this.output === MODE_EFFECT) return t("status.effect", { effect: this.effects.selected });
-        if (this.output === MODE_SYNC) return t("status.sync");
-        if (this.arbiter.requested === MODE_SYNC) return t("status.waitingTv");
-        return MODE_LABEL.light;
+        if (this.breaker.needsManualResume) return "gave_up";
+        if (this.breaker.tripped) return "tripped";
+        if (this.armed === MODE_SYNC) return "waiting";
+        if (!this.arbiter.power) return "off";
+        if (this.output === MODE_EFFECT) return "effect";
+        if (this.output === MODE_SYNC) return "sync";
+        if (this.arbiter.requested === MODE_SYNC) return "waiting";
+        return "light";
     }
 
     /**
@@ -1768,6 +1832,8 @@ export default class HueLink {
                 // from outside.
                 armed: this.armed ? MODE_LABEL[this.armed] : null,
                 status: this.status(),
+                // `status` as a fixed word, see `activity`.
+                activity: this.activity(),
                 // The breaker as a fixed word for automations; `status` is
                 // the same fact translated for people. `gave_up` holds through
                 // an off or a manual try until a recovery is proven.
@@ -1799,6 +1865,7 @@ export default class HueLink {
             name: "HueLink",
             manufacturer: "gatisr/huelink",
             model: "Hue entertainment sender",
+            sw_version: VERSION,
             // z2m device identifier is the literal `zigbee2mqtt_<ID>` (no base
             // topic). Read from the device so it survives a re-pair.
             ...(this.device ? { via_device: `zigbee2mqtt_${this.device.options.ID}` } : {}),
@@ -1821,7 +1888,13 @@ export default class HueLink {
             });
         }
 
-        const entities = discoveryEntities({ stateTopic, commandTopic, device, effectOptions: this.effectOptions });
+        const entities = discoveryEntities({
+            stateTopic,
+            commandTopic,
+            availabilityTopic: `${base}/bridge/state`,
+            device,
+            effectOptions: this.effectOptions,
+        });
         for (const [kind, id, cfg] of entities) {
             await this.mqtt.publish(`${kind}/huelink_${CONFIG.name}/${id}/config`, JSON.stringify(cfg), {
                 baseTopic: prefix,

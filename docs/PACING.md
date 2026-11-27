@@ -95,6 +95,26 @@ Two things keep that from quietly undoing the measurement:
 
 The arithmetic for deciding what a different coordinator can carry is in the README, under "Separate coordinator".
 
+## Default since 1.3.4
+
+Normal (and so every shipped default) is the Games preset with `fps` 3 and the budget kept at 0.35: `smoothingFactor` 1.05, `bigChangeThreshold` 4, `fastSmoothingMs` 20, `maxFastPerSec` 4, saturation 1.05. The slow tick is what pays for the fast path, so cuts land quickly without raising the load. The sections below describe the earlier defaults and why they were chosen; their measurements still hold.
+
+Measured with the real `Pacer`, 51 ms per send, 20 ms tick, 60 s per run, all 25 effects and a synthetic film with a cut every ~4 s:
+
+| | film fps | film fast frames | film occupancy | effects mean | worst effect |
+| --- | --- | --- | --- | --- | --- |
+| Normal until 1.3.3 (5 fps, threshold 6, 1 cut/s) | 3.6 | 7 % | 18.5 % | 17.1 % | 23.2 % |
+| Games at 5 fps (budget 0.55) | 3.8 | 21 % | 19.4 % | 21.1 % | 32.5 % |
+| **Normal since 1.3.4** (Games at 3 fps) | 2.9 | 42 % | 14.6 % | 16.5 % | 24.2 % |
+| **Calm** (3 fps, fade 1.4, threshold 8, 1 cut/s) | 2.6 | 11 % | 13.1 % | 11.6 % | 14.4 % |
+| **Dynamic** (5 fps, fade 1.0, threshold 3, 5 cuts/s) | 3.9 | 31 % | 19.9 % | 22.7 % | 33.8 % |
+
+- The budget never binds at these settings: 0.35 and 0.55 measure the same. It stays 0.35, the net from "Why the budget stays at 0.35".
+- The worst effect stays under the 28 % criterion from "MAX_FPS = 5". Its p95 is 30.6 % (25.5 % before).
+- Vivid is Normal with saturation 150 %, so it measures the same as Normal.
+- Dynamic is the one preset over the 28 % criterion on the worst effect: there the 0.35 budget is what holds it (p95 35.7 %). A budget of 0.45 measured the same, so it stays 0.35.
+- `maxFastPerSec` 4 brings back the effect feedback loop described under "maxFastPerSec = 1": on loud effects most frames take the fast path. With the tick at 3 the worst case is 3 + 4 = 7 sends per second, inside the budget.
+
 ## The burst
 
 Off by default (`burstFps: 0`). It is the one mechanism here that does not ration, so it gets the longest justification.

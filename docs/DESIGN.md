@@ -34,6 +34,8 @@ The strip is controlled by exactly two things:
 - **Power** — the strip's own HA `light` entity. On or off.
 - **Mode** — `select.huelink_mode`: Light, Effect or Sync. Exactly one at a time.
 
+In Home Assistant the Mode select also lists **Off**. It is not a fourth mode and not a second power switch: the select shows Off when power is off and nothing is armed, and choosing it sends the ordinary `{"power": "OFF"}`. It exists so the control that starts a mode can also stop it. The arbiter, the `mode` field on the state topic and the z2m page know nothing about it.
+
 Choosing an effect is **not** a third switch. The effect list has no "None" option, because "no effect" is already a mode. A third independently switchable thing is how you end up with two of them on and one of them silent, with no way to tell which.
 
 This logic lives here and in the arbiter, never in the Lovelace card. A card is one of several front ends; automations, voice and a wall switch must all get the same behaviour.
@@ -133,6 +135,14 @@ With two in flight the arithmetic reverses. Every echo now describes a *past* co
 
 So `light()` keeps `stripState` — the power the strip was last told to take, or last reported to be in — and refuses to send a command that matches it. The loop needs an echo to produce a new command; now it cannot, and an off/on race settles in two steps instead of running until something else interrupts it. This is a different question from `this.output`, which is the *mode*, and the two are kept separate on purpose: `applyOutput` may legitimately want the strip lit in three different modes.
 
+## A streaming strip reads "on", without being told
+
+A stream starts with no "on", because the strip obeys one even mid-stream and shows its last ordinary colour until the next frame. That left the light entity reading "off" beside a lit strip, and a tap on a card that reads "off" sends exactly that "on".
+
+So `showOn()` publishes `state: "ON"` into z2m's state cache only (`publishEntityState`), with no command to the strip. `stripState` is not touched: it describes the strip's own on/off, which is still off, so a later `light("ON")` is not suppressed. The echo is recognised by `shownOnAt` and dropped before the breaker's proof-of-life check, because no strip acked it. Every way out of a stream sends a real command (a forced "off", or "on" for light), so the entity is true again the moment the stream ends.
+
+Not covered: an explicit "on" sent to a streaming strip (voice, an automation) still reaches it through z2m and still flashes. The extension cannot stop z2m forwarding a `/set`.
+
 ## Settling before publishing
 
 `this.output` is what has actually been applied to the strip, and `applyOutput` is the only place it changes. The arbiter's *decision* changes earlier, in `setPower` / `setMode`. If a command handler published between the two, it published a state that contradicted itself: `power: "OFF"` next to `output: "light"`, with the `status` line derived from the same stale output.
@@ -211,9 +221,11 @@ Three topics, all relative to the z2m base topic (`zigbee2mqtt` by default). `<n
 }
 ```
 
+`activity` is `status` as a fixed word (`off`, `light`, `effect`, `sync`, `waiting`, `tripped`, `gave_up`), for card conditions and automations. `status()` is built from `activity()`, so the two cannot disagree.
+
 `mode` is what the user **chose**; `output` is what is actually being sent right now. In sync with no TV they differ, and that is the point: two fields, two questions. `armed` is what a dark strip is waiting for, `null` most of the time; without it, "off" and "off but armed" look identical from outside.
 
-**`<base>/<name>/command` — commands, JSON body.** Recognised keys: `power` (`ON`/`OFF`/`TOGGLE`), `mode`, `effect`, `effect_brightness`, `effect_speed`, `fps`, `occupancy_budget`. Unknown keys are ignored; an unknown effect **name** is refused rather than applied, because the engine would otherwise switch to "no effect" and leave effect mode on but empty.
+**`<base>/<name>/command` — commands, JSON body.** Recognised keys: `power` (`ON`/`OFF`/`TOGGLE`), `mode`, `effect`, `effect_brightness`, `effect_speed`, `fps`, `occupancy_budget`. Unknown keys are ignored; an unknown effect **name** is refused rather than applied, because the engine would otherwise switch to "no effect" and leave effect mode on but empty. `effect` is applied before `mode`, so one command with both enters effect mode on that effect, even when none was selected before.
 
 The suffix is `/command` and not the more obvious `/set` on purpose. z2m's own publish extension routes every topic matching `<base>/(?!bridge)(.+?)/(get|set)` and resolves the captured name as a Zigbee entity. `<name>` is a virtual topic served by this extension, with no device behind it, so the core found nothing and logged `error: Entity '<name>' is unknown` on every single command. Any suffix outside that pattern is ignored by the core and still reaches the extension, because the core subscribes to `<base>/#` and hands every message to the event bus.
 
@@ -226,7 +238,7 @@ The attribute form `<base>/<strip>/set/<field>` with a bare value is accepted to
 
 So the same knob can be turned from HA and from the z2m page and both reach the same call, rather than two copies free to drift apart.
 
-HA discovery is published under `<discovery_topic>/<kind>/huelink_<name>/<id>/config`.
+HA discovery is published under `<discovery_topic>/<kind>/huelink_<name>/<id>/config`. Every entity carries `availability` on z2m's `<base>/bridge/state` and a `default_entity_id` of `<kind>.<name>_<id>`, so entity ids do not depend on the translated names (HA 2025.10+).
 
 ## The z2m device page
 

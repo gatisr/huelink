@@ -310,8 +310,8 @@ brightness     1.0
 | `valentines` | Holiday: Valentine's Day | pulse |
 | `easter` | Holiday: Easter | wave |
 | `ligo` | Holiday: Midsummer | flame |
-| `lacplesis` | Holiday: Remembrance Day | flame |
-| `independence` | Holiday: Independence Day | solid |
+| `lacplesis` | Holiday: Latvian Remembrance Day | flame |
+| `independence` | Holiday: Latvian Independence Day | solid |
 | `halloween` | Holiday: Halloween | flame |
 | `romance` | Mood: Romance | breathe |
 | `fairies` | Mood: Fairy Lights | twinkle |

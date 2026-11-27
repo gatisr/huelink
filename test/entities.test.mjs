@@ -16,12 +16,15 @@ const { default: HueLink } = await import("../extension/huelink.mjs");
 const { CONFIG } = await import("../extension/huelink-lib/config.mjs");
 const {
     ACCESS_STATE_SET,
+    ACTIVITIES,
     CONFIGURATION,
     DIAGNOSTIC,
     FIELDS,
     MAIN,
+    MODE_LABEL,
     categoryOf,
 } = await import("../extension/huelink-lib/huelink-ui.mjs");
+const { t: tr } = await import("../extension/huelink-lib/i18n/index.mjs");
 
 /** The strip's z2m IEEE address in this test. Only the shape matters. */
 const DEVICE_ID = "0x00178801aabbccdd";
@@ -120,6 +123,54 @@ test("our own discovery payloads carry the same categories", async (t) => {
         const expected = categoryOf(id);
         assert.equal(payload.entity_category, expected, `${id} is in the wrong Home Assistant group`);
     }
+});
+
+test("the mode select offers Off as a view of power", async (t) => {
+    const h = await started();
+    t.after(() => h.link.stop());
+
+    const mode = discovery(h.published).get("mode");
+    const off = tr("status.off");
+    assert.deepEqual(mode.options, [off, ...Object.values(MODE_LABEL)]);
+    assert.ok(!Object.values(MODE_LABEL).includes(off), "Off must not collide with a mode name");
+    // Off is the existing power command, everything else the existing mode command.
+    assert.ok(mode.command_template.includes(`{% if value == ${JSON.stringify(off)} %}{"power": "OFF"}`));
+    assert.ok(mode.command_template.includes('{"mode": {{ value | tojson }}}'));
+    // Armed (dark, waiting for the TV) must still read as the chosen mode, not Off.
+    assert.ok(mode.value_template.includes("value_json.armed"));
+    assert.ok(mode.value_template.includes(JSON.stringify(off)));
+});
+
+test("every entity has availability and a stable entity id", async (t) => {
+    const h = await started();
+    t.after(() => h.link.stop());
+
+    const ids = new Set();
+    for (const p of h.published) {
+        const m = /^(?:.*\/)?(\w+)\/huelink_[^/]+\/([^/]+)\/config$/.exec(p.topic);
+        if (!m || !p.payload) continue;
+        const [, kind, id] = m;
+        const cfg = JSON.parse(p.payload);
+        // Locale-independent, so a shared dashboard works everywhere.
+        assert.equal(cfg.default_entity_id, `${kind}.${CONFIG.name}_${id}`, id);
+        assert.ok(!ids.has(cfg.default_entity_id), `duplicate ${cfg.default_entity_id}`);
+        ids.add(cfg.default_entity_id);
+        assert.deepEqual(cfg.availability, [{ topic: "zigbee2mqtt/bridge/state", value_template: "{{ value_json.state }}" }], id);
+    }
+    assert.ok(ids.has(`sensor.${CONFIG.name}_activity`), "the activity sensor is published");
+});
+
+test("the published activity is one of the sensor's options", async (t) => {
+    const h = await started();
+    t.after(() => h.link.stop());
+
+    const cfg = discovery(h.published).get("activity");
+    assert.equal(cfg.device_class, "enum");
+    assert.deepEqual(cfg.options, ACTIVITIES);
+    const state = JSON.parse([...h.published].reverse().find((p) => p.topic === CONFIG.name).payload);
+    // After a start the strip is dark and armed on sync.
+    assert.equal(state.activity, "waiting");
+    assert.ok(cfg.options.includes(state.activity));
 });
 
 test("nothing read-only is published as a setting", async (t) => {

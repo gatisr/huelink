@@ -23,6 +23,7 @@ import dgram from "node:dgram";
 import HueLink from "../extension/huelink.mjs";
 import { CONFIG } from "../extension/huelink-lib/config.mjs";
 import { MODE_LABEL } from "../extension/huelink-lib/huelink-ui.mjs";
+import { t } from "../extension/huelink-lib/i18n/index.mjs";
 
 const WS = process.env.Z2M_WS ?? "ws://127.0.0.1:8080/api";
 const DEVICE = process.env.Z2M_DEVICE ?? "lightstrip_test";
@@ -186,8 +187,8 @@ async function main() {
     check("a mode select is published", Boolean(modeSelect));
     check("an effect select is published", Boolean(effectSelect));
     check(
-        "the mode select offers exactly the modes the extension knows",
-        modeSelect.options.join("|") === Object.values(MODE_LABEL).join("|"),
+        "the mode select offers Off plus exactly the modes the extension knows",
+        modeSelect.options.join("|") === [t("status.off"), ...Object.values(MODE_LABEL)].join("|"),
         modeSelect.options.join(", "),
     );
     check("the effect select carries the whole catalogue", options.length >= 20, `${options.length} effects`);

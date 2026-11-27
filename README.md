@@ -24,7 +24,7 @@ Exactly one **mode** is active: **Light** (plain Zigbee light, no streaming), **
 ## Requirements
 
 | Need | Details |
-|---|---|
+| --- | --- |
 | zigbee2mqtt **2.1.1+** | 2.0 added auto-loaded `external_extensions/` and `external_converters/`; frames go out via `endpoint.zclCommand`, which needs `zigbee-herdsman-converters` 23+ (shipped in 2.1.1). Developed on 2.14.3. |
 | Node 20+ | Whatever your z2m image already uses. |
 | Strip paired **directly** to z2m | Not to a Hue bridge, or HueLink cannot see it. |
@@ -71,10 +71,10 @@ A healthy start logs, in order: settings read, effects loaded, startup reset sen
 **zigbee2mqtt device page** (the converter's job): fifteen `huelink_*` fields after the normal light controls. All writable ones are **live**; the config file only sets their starting value.
 
 | Field | Meaning |
-|---|---|
+| --- | --- |
 | `version`, `status`, `fps_real`, `dropped` | Read-only: loaded version, one-line state, frames delivered in the last 5 s, frames suppressed since start |
 | `mode` | Light / Effect / Sync |
-| `preset` | Normal / Movies / Sports / Games / Music / Vivid; shows no value once any slider is moved |
+| `preset` | Normal / Calm / Dynamic / Vivid; shows no value once any slider is moved |
 | `fps`, `delta`, `duty`, `budget` | Frame cap, delta threshold, quota per 100 ms, air budget % |
 | `smoothing`, `cut_threshold`, `cut_ms`, `cut_per_sec` | Fade length, scene-cut size, scene-cut fade, cuts per second |
 | `saturation` | Colour saturation % |
@@ -82,16 +82,83 @@ A healthy start logs, in order: settings read, effects loaded, startup reset sen
 **Home Assistant** gets a separate "HueLink" device, linked to the strip with `via_device`:
 
 | Group | Entities |
-|---|---|
+| --- | --- |
 | Main | Mode, Picture preset, Effect, Effect speed, Status |
 | Configuration | Frame cap, Air budget, Fade length, Scene cut threshold / fade / per second, Colour saturation, Effect brightness |
-| Diagnostic | Frames per second, Coordinator load, Deliverable frame rate, Strip needs attention |
+| Diagnostic | Frames per second, Coordinator load, Deliverable frame rate, Strip needs attention, Activity |
 
 - Status is a main control: it is the only way to tell a strip that is dark on purpose from one that stopped answering.
 - Power is the strip's own `light` entity. There is no HueLink power switch.
+- Mode has a fourth option in HA, **Off**: Off / Light / Effect / Sync in one control. Off is the same power off as the light entity, so the two cannot disagree. Sync still shows while the strip waits for the TV.
 - **Upgrading: reload the MQTT integration once** (Settings > Devices & services > MQTT > Reload). HA reads `entity_category` only when it registers an entity.
 - On a brand-new install `via_device` may be skipped until the next discovery (a z2m restart).
 - **Duplicates:** z2m also publishes the `huelink_*` fields next to the light in HA. They are discovered *disabled*, which does nothing for entities HA already registered: disable or delete those once in HA.
+- **Activity** is Status as a fixed word: `off`, `light`, `effect`, `sync`, `waiting` (dark, waiting for the TV), `tripped`, `gave_up`. Use it in card conditions and automations; Status is translated and may change wording.
+- Every entity reads "unavailable" while zigbee2mqtt is down.
+- **Entity ids** are `<domain>.huelink_<id>` (`select.huelink_mode`, `sensor.huelink_activity`, ...) in every language, on Home Assistant 2025.10 or newer. HA applies them only when it first registers an entity: on an older install, delete the HueLink device in HA and restart zigbee2mqtt, or rename the ids in the example below.
+
+### Dashboard example
+
+Mode as a row of buttons, the controls that matter for the current activity, and the load on the coordinator. Replace `light.hue_gradient_strip` with your strip.
+
+```yaml
+type: vertical-stack
+cards:
+  - type: tile
+    entity: select.huelink_mode
+    name: HueLink
+    features:
+      - type: select-options
+        style: buttons
+  # Always visible, so an effect can be picked before Effect is switched on.
+  - type: tile
+    entity: select.huelink_effect
+    features:
+      - type: select-options
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.huelink_activity
+        state: effect
+    card:
+      type: tile
+      entity: number.huelink_effect_speed
+      features:
+        - type: numeric-input
+          style: slider
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.huelink_activity
+        state: [sync, waiting]
+    card:
+      type: tile
+      entity: select.huelink_preset
+      features:
+        - type: select-options
+          style: buttons
+  - type: tile
+    entity: sensor.huelink_occupancy
+    features:
+      - type: bar-gauge
+```
+
+**Favourite effects.**
+
+- A shorter list: add `options:` with the effect names to the effect tile's `select-options`.
+- One tap that also switches Effect on: one command with both keys. The effect is applied first, so the mode starts on it. `"mode": "effect"` is the untranslated name and works in every language; the effect name is the one shown in the effect select.
+
+```yaml
+type: button
+name: Bonfire
+icon: mdi:campfire
+tap_action:
+  action: perform-action
+  perform_action: mqtt.publish
+  data:
+    topic: zigbee2mqtt/huelink/command
+    payload: '{"mode": "effect", "effect": "Mood: Bonfire"}'
+```
 
 ---
 
@@ -107,7 +174,7 @@ config changed: segments, udpPort only take effect after a zigbee2mqtt restart
 ### Basics
 
 | Field | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `device` | `"Hue Gradient Strip"` | Strip `friendly_name`. Also the power switch. **Must set.** |
 | `segments` | `7` | LCX002 has 7. Does not teach a different pixel map. |
 | `udpPort` | `19447` | Where Hyperion's `udpraw` points. |
@@ -124,8 +191,8 @@ config changed: segments, udpPort only take effect after a zigbee2mqtt restart
 How much of the Zigbee coordinator the strip may take from the rest of the house. Read [docs/PACING.md](docs/PACING.md) before raising any of these.
 
 | Field | Default | Notes |
-|---|---|---|
-| `fps` | `5` (1..`maxFps`, restart) | **Starting** value only; HA and the device page own it afterwards. 5 is not a radio limit, see PACING.md. **Lower:** slower colour changes, less air used. **Higher:** follows the picture closer, but only if the budget below can pay for it (`fps_real` tells). |
+| --- | --- | --- |
+| `fps` | `3` (1..`maxFps`, restart) | **Starting** value only; HA and the device page own it afterwards. 5 is not a radio limit, see PACING.md. **Lower:** slower colour changes, less air used. **Higher:** follows the picture closer, but only if the budget below can pay for it (`fps_real` tells). |
 | `maxFps` | `5` (1-50, restart) | Highest cap the slider accepts. Permission, not delivery; raising it alone changes nothing. **Lower:** caps the slider and every preset. |
 | `dutyCap` | `2` (1-5, restart) | Frames per 100 ms window. Bounds how many frames can sit ahead of a wall-switch press. 2 = 20 fps ceiling. **Higher:** more fps possible, and a wall switch elsewhere may wait an extra frame. |
 | `occupancyBudget` | `0.35` (0.05-0.9, starting value) | Share of wall time streaming may keep the coordinator busy. Buys roughly budget / frame cost: 0.35 at 51 ms = 6.9 fps. HA shows 5-90 %. **Lower:** fewer frames, the rest of the house stays snappy. **Higher:** more frames; above ~0.4 other Zigbee devices answer late or time out. |
@@ -135,35 +202,33 @@ How much of the Zigbee coordinator the strip may take from the rest of the house
 Starting values (the sliders own them while running). These change the look, not the air used.
 
 | Field | Default | Notes |
-|---|---|---|
-| `smoothingFactor` | `1.15` (1-2) | Fade time as a multiple of the frame gap. Above 1 so colour never rests between frames. **Lower:** reacts sooner; near 1 the colour visibly steps. **Higher:** smoother, but lags the picture. |
-| `bigChangeThreshold` | `6` (1-40) | Perceptual steps that count as a scene cut. **Lower:** more changes jump straight through; at 1 everything is a cut and `fps` controls nothing. **Higher:** cuts fade like ordinary changes and arrive late; 40 = off. |
-| `fastSmoothingMs` | `50` (0-500) | Fade for a scene cut. **Lower:** flashes land as flashes; below ~15 ms some strips click. **Higher:** cuts are softer and later. 20-40 is worth trying. |
-| `maxFastPerSec` | `1` (0-10) | Scene cuts per second that may skip the frame clock. A ration, so a strobe cannot make `fps` meaningless. **Lower:** strobes are averaged away; 0 = off. **Higher:** strobes come through, at the cost of air. |
-| `saturation` | `1.0` (0.5-2) | Multiplier, `c' = luma + (c - luma) * s` on sRGB bytes (Rec.709). 1.0 is bit-identical to no saturation. Grey and black stay put; brightness is untouched. Try 1.3-1.6; above ~1.8 content clips to primaries. **Costs the coordinator nothing.** HA shows 50-200 %. |
+| --- | --- | --- |
+| `smoothingFactor` | `1.05` (1-2) | Fade time as a multiple of the frame gap. Above 1 so colour never rests between frames. **Lower:** reacts sooner; near 1 the colour visibly steps. **Higher:** smoother, but lags the picture. |
+| `bigChangeThreshold` | `4` (1-40) | Perceptual steps that count as a scene cut. **Lower:** more changes jump straight through; at 1 everything is a cut and `fps` controls nothing. **Higher:** cuts fade like ordinary changes and arrive late; 40 = off. |
+| `fastSmoothingMs` | `20` (0-500) | Fade for a scene cut. **Lower:** flashes land as flashes; below ~15 ms some strips click. **Higher:** cuts are softer and later. 20-40 is worth trying. |
+| `maxFastPerSec` | `4` (0-10) | Scene cuts per second that may skip the frame clock. A ration, so a strobe cannot make `fps` meaningless. **Lower:** strobes are averaged away; 0 = off. **Higher:** strobes come through, at the cost of air. |
+| `saturation` | `1.05` (0.5-2) | Multiplier, `c' = luma + (c - luma) * s` on sRGB bytes (Rec.709). 1.0 is bit-identical to no saturation. Grey and black stay put; brightness is untouched. Try 1.3-1.6; above ~1.8 content clips to primaries. **Costs the coordinator nothing.** HA shows 50-200 %. |
 
 ### Presets
 
-> **Warning:** the air budget, the presets and the sliders are reachable by anything that can publish to `huelink/command` or use the HA device. Raising the budget (Games, Sports, Music or by hand) takes coordinator time from every other Zigbee device. Change them **at your own risk** and watch the Zigbee network (command latency, failures, offline devices) closely while you do.
+> **Warning:** the air budget, the presets and the sliders are reachable by anything that can publish to `huelink/command` or use the HA device. Raising the budget by hand takes coordinator time from every other Zigbee device, and Dynamic uses more of it than the other presets. Change them **at your own risk** and watch the Zigbee network (command latency, failures, offline devices) closely while you do.
 
 `huelink_preset` sets all seven picture knobs (`fps`, `occupancyBudget`, the four above, `saturation`) at once. Moving any slider afterwards clears the selection (the select shows no value).
 
-| Preset | What it is |
-|---|---|
-| **Normal** | The defaults, and the way back. |
-| **Movies** | Calm and **cheaper** than Normal: 4 fps, longer fade. |
-| **Sports** | Fast motion without flicker: **higher** cut threshold so camera flashes and LED boards are not scene cuts. |
-| **Games** | Lowest latency: barely any fade, 4 cuts/s. Costliest. |
-| **Music** | Flashes over frame rate: slow stream, 5 cuts/s. |
-| **Vivid** | Saturation 1.55, pacing untouched, costs nothing. |
+| Preset | How the strip behaves |
+| --- | --- |
+| **Normal** | Everyday. Follows the picture at 3 fps and jumps on scene cuts (up to 4 a second). |
+| **Calm** | Slow, soft fades. Only big scene changes jump, at most one a second; flashes are smoothed away. Lowest load. |
+| **Dynamic** | Fastest reaction: 5 fps, no extra fade, flashes and strobes come through (5 a second), stronger colour. Highest load. |
+| **Vivid** | Normal, with colour saturation at 150 %. Same load as Normal. |
 
-- A preset cannot exceed `maxFps`. On a default install Games (8) and Sports (7) land at 5, and the log names every knob that was trimmed.
-- Games and Sports raise `occupancyBudget` (0.55 / 0.50) because 8 fps at 51 ms does not fit in 0.35. Presets never touch `dutyCap`, so the worst wait for someone else's command stays two frames.
+- No preset raises `occupancyBudget` above 0.35 or touches `dutyCap`, so the worst wait for someone else's command stays two frames. Measured load per preset: [docs/PACING.md](docs/PACING.md), "Default since 1.3.4".
+- A preset cannot exceed `maxFps`; a trimmed knob is named in the log. None does on a default install.
 - Presets are **data** in `extension/huelink-lib/presets.json` (edit + restart). A malformed entry is logged and skipped. Arguments for each number live there; arithmetic in [docs/PACING.md](docs/PACING.md).
 
 ### Tuning fast content
 
-Defaults suit film. For strobes, music videos or games, turn these **one at a time, in this order**:
+Pick **Dynamic** first. To tune by hand from **Calm**-like settings, turn these **one at a time, in this order**:
 
 1. **Scene cuts per second 1 -> 4.** At 1, a strobe at 10 Hz gets one flash; the rest are averaged away. Nothing else matters until this moves.
 2. **Scene cut fade 50 -> 20 ms.** Flashes land as flashes. Below ~15 ms some strips click.
@@ -191,11 +256,13 @@ The 5 fps default comes from one measurement: a frame costs a shared coordinator
 
 1. **Measure:** run Sync for a minute, read `pacer.avgSendMs` from `mosquitto_sub -t zigbee2mqtt/huelink -C 1`. That is your price.
 2. **Arithmetic:**
+
    ```
    budget fps = occupancyBudget / (avgSendMs / 1000)
    duty fps   = dutyCap * 10
    maxFps     = min(budget fps, duty fps)
    ```
+
 3. **Raise in this order:** `occupancyBudget` first (0.7 is defensible on a dedicated stick; set it with the slider), `dutyCap` only if the budget now exceeds `dutyCap * 10` fps, `maxFps` last. Restart z2m, then raise `fps`.
 4. **Verify:** `fps_real` is close to `fps`; `pacer.skippedDuty` is not climbing; `pacer.worstSendMs` is not growing (the tail is what ends in `SRSP - AF - dataRequest after 6000ms`). Then switch a light that is *not* the strip by hand: it must still feel immediate.
 
@@ -206,7 +273,7 @@ If the numbers disagree, the log warns at startup rather than quietly trimming. 
 Off by default. A burst spends the budget **earlier**; it creates none. It pays only from credit that quiet scenes bank, so the long-term average stays `occupancyBudget`. Read [docs/PACING.md](docs/PACING.md) first. All live.
 
 | Field | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `burstFps` | `0` (off, 0-15 or `maxFps`) | Frame rate during a burst, started by a scene cut. Does not touch `dutyCap`. |
 | `burstMaxMs` | `1000` (0-5000) | Longest single burst. 0 also disables. **Higher:** a long action scene stays fast longer, if credit lasts. |
 | `burstCreditMs` | `500` (0-5000) | Bucket size in coordinator ms; the real limiter. **Higher:** longer bursts, and a longer spike in coordinator load during them. |
@@ -277,7 +344,7 @@ stateDiagram-v2
 ## Troubleshooting
 
 | Symptom | Cause / fix |
-|---|---|
+| --- | --- |
 | No `huelink_*` fields on the device page | Converter not loaded. `huelink-exposes.mjs` must be in `external_converters/` with `external_extensions/huelink-lib/` beside it in the same data directory. Look for `huelink-exposes` in the log; a failed load renames it `.invalid` (light control keeps working). |
 | Strip ignores everything, no `[huelink]` log lines | Extension did not start: files not in `external_extensions/`, or `device` does not match a `friendly_name`. |
 | Mode is Sync, nothing happens | Sync with no frames is `off` by design. Check: Hyperion capture running; controller is `udpraw` to the z2m host and right port; UDP port published in Docker; `tools/udpdump.py` sees 21-byte datagrams. |

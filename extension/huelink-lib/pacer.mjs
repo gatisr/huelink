@@ -79,8 +79,12 @@ export const MAX_CHARGE_MS = 250;
 
 /** Defaults when the caller passes nothing. */
 export const DEFAULTS = {
-    /** Target frame rate: a ceiling, not a promise. */
-    fps: MAX_FPS,
+    /**
+     * Target frame rate: a ceiling, not a promise. Below `MAX_FPS` since 1.3.4:
+     * responsiveness comes from the fast path below, and the slow tick pays
+     * for it. See docs/PACING.md, "Default since 1.3.4".
+     */
+    fps: 3,
     /**
      * Highest fps `setFps` will accept. Set once, at construction: the z2m
      * device page builds its slider from this number when the converter
@@ -100,21 +104,18 @@ export const DEFAULTS = {
     /** Refresh at least this often even with no colour change. */
     keepaliveMs: 1000,
     /** Fade = measured gap * this (>1 so the colour never comes to rest). */
-    smoothingFactor: 1.15,
-    /**
-     * How many thresholds a change must cross to count as a scene cut.
-     * 6 gives ~0.3 fast frames/s on real films. See docs/PACING.md.
-     */
-    bigChangeThreshold: 6,
+    smoothingFactor: 1.05,
+    /** How many thresholds a change must cross to count as a scene cut. See docs/PACING.md. */
+    bigChangeThreshold: 4,
     /**
      * How often per second the fast path may skip the fps clock.
      * Rolling window, so the worst case stays `fps + maxFastPerSec`. See docs/PACING.md.
      */
-    maxFastPerSec: 1,
+    maxFastPerSec: 4,
     /** Fast path window. Same length as the occupancy window so the two add up. */
     fastWindowMs: 1000,
     /** Fade for a scene cut. Not zero: a jump reads as a click on a cheap strip. */
-    fastSmoothingMs: 50,
+    fastSmoothingMs: 20,
 
     // --- Burst: the token bucket. Off by default, see docs/PACING.md. ---
 

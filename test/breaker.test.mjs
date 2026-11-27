@@ -82,6 +82,8 @@ function harness({ failing, echo = false, echoMs = 80 }) {
     const log = { info: [], error: [], warning: [], debug: [] };
     const sends = [];
     const published = [];
+    /** What went to z2m's state cache directly, with no command to the strip. */
+    const entityStates = [];
     let dead = failing;
     // Set below, but needed inside `publish`, which runs only after `start()`.
     let self;
@@ -140,7 +142,9 @@ function harness({ failing, echo = false, echoMs = 80 }) {
         // `publishEntityState`. Real z2m passes it fourth; `null` here would
         // mean an error on EVERY `publishExposes` call, and that would look
         // like an extension fault rather than a missing test harness.
-        async () => {},
+        async (entity, payload) => {
+            entityStates.push(payload);
+        },
         {
             onMQTTMessage() {},
             onPublishEntityState() {},
@@ -167,7 +171,7 @@ function harness({ failing, echo = false, echoMs = 80 }) {
     );
     self = link;
     live.push(link);
-    return { link, log, sends, published, deviceOptions, revive: () => (dead = false) };
+    return { link, log, sends, published, entityStates, deviceOptions, revive: () => (dead = false) };
 }
 
 /** The last published huelink state. */
@@ -237,6 +241,7 @@ async function testTripDoesNotLightTheStrip() {
     assert.strictEqual(h.link.arbiter.power, false, "power should be off, not light");
     assert.strictEqual(h.link.armed, null, "a trip does not arm: an unreachable strip does not light itself");
     assert.strictEqual(lastState(h.published).mode, MODE_LABEL.light, "the mode must not hang on Sync");
+    assert.strictEqual(lastState(h.published).activity, "tripped");
     // AN ORDINARY OFF COMMAND, NOT A BLACK FRAME, and it is the last word.
     assert.strictEqual(
         lightCommands(h.published).at(-1),
@@ -443,6 +448,7 @@ async function testAutoRetryGivesUpOnAGoneStrip() {
         "the status must say a person has to act",
     );
     assert.strictEqual(lastState(h.published).breaker, "gave_up", "and the fixed word automations read");
+    assert.strictEqual(lastState(h.published).activity, "gave_up");
 
     // Far past any dwell, with the strip back and frames on offer: still shut.
     h.revive();
@@ -613,6 +619,7 @@ async function testSourceSilenceTurnsStripOff() {
     assert.strictEqual(st.mode, MODE_LABEL.sync, `the choice must not vanish while waiting, was ${st.mode}`);
     assert.strictEqual(st.armed, MODE_LABEL.sync, "the state must show that the strip is waiting");
     assert.strictEqual(st.status, t("status.waitingTv"), `status was ${st.status}`);
+    assert.strictEqual(st.activity, "waiting");
 
     // AN ORDINARY OFF COMMAND, NOT A BLACK FRAME.
     assert.strictEqual(lightCommands(h.published).at(-1), "OFF", "the last command to the strip should be OFF");
@@ -1153,8 +1160,57 @@ async function testIntoTheStreamWithoutAnOn() {
     await h.link.stop();
 }
 
+async function testAStreamingStripReadsOn() {
+    // Left reading "off", the HA light card's tap sends an "on" to a lit,
+    // streaming strip, and that "on" is what flashes its ordinary colour.
+    const h = harness({ failing: false });
+    await h.link.start();
+    await h.link.setMode(MODE_LABEL.sync);
+    const fed = feed(h.link);
+    await sleep(600);
+    assert.strictEqual(h.link.output, "sync");
+    assert.ok(h.entityStates.some((p) => p.state === "ON"), "z2m/HA must be told the strip is on");
+    assert.ok(!lightCommands(h.published).includes("ON"), "the strip itself must not be: that is the flash");
+
+    // The echo of that display-only ON is not an ack and not a press.
+    await h.link.onEntityState({ entity: { name: CONFIG.device }, payload: { state: "ON" } });
+    assert.strictEqual(h.link.stripState, "OFF", "the strip's own on/off is still off");
+    assert.strictEqual(h.link.output, "sync", "and the stream goes on");
+
+    // The card now reads on, so one tap is an OFF, and it ends the stream.
+    await h.link.onStripCommand(JSON.stringify({ state: "OFF" }));
+    clearInterval(fed);
+    await sleep(200);
+    assert.strictEqual(h.link.arbiter.power, false);
+    assert.strictEqual(h.link.output, "off");
+    assert.strictEqual(lightCommands(h.published).at(-1), "OFF", "a real OFF, so the entity reads off again");
+    await h.link.stop();
+}
+
+async function testEffectAndModeInOneCommand() {
+    // A one-tap dashboard button sends both keys. The effect has to land
+    // first: with none selected, `setMode` would refuse effect mode.
+    const h = harness({ failing: false });
+    await h.link.start();
+    h.link.effects.select(null);
+    assert.ok(!h.link.effects.active, "precondition: no effect selected");
+    const wanted = h.link.effectOptions[1];
+    await h.link.onCommand({
+        topic: `zigbee2mqtt/${CONFIG.name}/command`,
+        message: JSON.stringify({ mode: "effect", effect: wanted }),
+    });
+    assert.strictEqual(h.link.effects.selected, wanted);
+    assert.strictEqual(h.link.arbiter.requested, "effect", "one command enters effect mode on it");
+    await sleep(300);
+    assert.strictEqual(h.link.output, "effect");
+    assert.strictEqual(lastState(h.published).activity, "effect");
+    await h.link.stop();
+}
+
 const tests = [
     ["into the stream without an ON, so the strip does not flash", testIntoTheStreamWithoutAnOn],
+    ["a streaming strip reads on, and one tap turns it off", testAStreamingStripReadsOn],
+    ["effect and mode in one command", testEffectAndModeInOneCommand],
     ["trips and then goes quiet", testTripsAndGoesQuiet],
     ["a trip switches off, it does not light up", testTripDoesNotLightTheStrip],
     ["a healthy stream is left alone", testHealthyStreamUnaffected],

@@ -26,6 +26,9 @@ export const MODE_LABEL = {
 /** Label -> mode. A `Map`, not an object: `"constructor"` from MQTT must not resolve. */
 export const MODE_BY_LABEL = new Map(Object.entries(MODE_LABEL).map(([mode, label]) => [label, mode]));
 
+/** `activity` values: the status line as fixed words, for card conditions and automations. Never translated. */
+export const ACTIVITIES = ["off", "light", "effect", "sync", "waiting", "tripped", "gave_up"];
+
 /**
  * Loaded at import so extension and converter share one list (editing
  * `presets.json` needs a restart). This module also loads in z2m's converter
@@ -57,7 +60,7 @@ export const CONFIGURATION = [
 ];
 
 /** Readings; read-only entities cannot be `config` (HA drops the whole discovery message). */
-export const DIAGNOSTIC = ["version", "fps_real", "dropped", "occupancy", "fps_ceiling", "breaker"];
+export const DIAGNOSTIC = ["version", "fps_real", "dropped", "occupancy", "fps_ceiling", "breaker", "activity"];
 
 const CATEGORY = new Map([
     ...MAIN.map((name) => [name, undefined]),

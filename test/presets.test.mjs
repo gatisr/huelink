@@ -75,8 +75,8 @@ test("Normal is the shipped defaults", () => {
 });
 
 test("a low ceiling trims only fps", () => {
-    assert.equal(landed(byId("games"), 5).fps, 5);
-    assert.deepEqual({ ...landed(byId("games"), 5), fps: 8 }, byId("games").knobs);
+    assert.equal(landed(byId("dynamic"), 4).fps, 4);
+    assert.deepEqual({ ...landed(byId("dynamic"), 4), fps: 5 }, byId("dynamic").knobs);
     assert.deepEqual(landed(byId("normal"), 5), byId("normal").knobs);
 });
 

@@ -67,16 +67,16 @@
   "tickMs": 20,
   "startSettleMs": 2000,
 
-  "fps": 5,
+  "fps": 3,
   "maxFps": 5,
   "dutyCap": 2,
   "occupancyBudget": 0.35,
 
-  "smoothingFactor": 1.15,
-  "bigChangeThreshold": 6,
-  "fastSmoothingMs": 50,
-  "maxFastPerSec": 1,
-  "saturation": 1.0,
+  "smoothingFactor": 1.05,
+  "bigChangeThreshold": 4,
+  "fastSmoothingMs": 20,
+  "maxFastPerSec": 4,
+  "saturation": 1.05,
 
   "burstFps": 0,
   "burstMaxMs": 1000,

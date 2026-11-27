@@ -4,6 +4,49 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.3.4
+
+The Home Assistant Mode select can now turn the strip off, and the light entity reads "on" while the strip streams. Its entities are also easier to build dashboards on.
+
+### Fixed
+
+- **A tap on the light card no longer flashes a streaming strip.** The entity read "off" during sync/effect (1.3.3), so the tap sent an "on", which the strip shows as its last ordinary colour.
+- The entity now reads "on" while streaming. z2m/HA are told directly; the strip still gets no "on".
+- One tap on the card turns a streaming strip off.
+
+### Added
+
+- **"Off" in the Mode select** (HA only): Off / Light / Effect / Sync in one control.
+- Off sends the existing power off; the other options are unchanged.
+- The select shows Off whenever the strip is off and not waiting for the TV. It used to show Light.
+- **Activity sensor** (diagnostic): `off` / `light` / `effect` / `sync` / `waiting` / `tripped` / `gave_up`. The same fact as Status, as a fixed word for card conditions and automations.
+- **Availability**: every entity reads "unavailable" while zigbee2mqtt is down.
+- **Stable entity ids** on a new install (`select.huelink_mode`, ...), the same in every language.
+- Version on the HA device page; long-term statistics for fps and coordinator load.
+- README: a ready Lovelace example.
+
+### Changed
+
+- One command with `mode` and `effect` now selects the effect first, so the mode starts on it.
+- **Normal is now Games at 3 fps**, and so are the shipped defaults: fps 3, fade 1.05, cut threshold 4, cut fade 20 ms, 4 cuts/s, saturation 105 %. Budget stays 0.35.
+- Quicker on scene cuts, with the same or lower coordinator load (measured, docs/PACING.md "Default since 1.3.4").
+- **Four presets instead of six**, each a visibly different behaviour: Normal, Calm (slow soft fades, lowest load), Dynamic (fastest, flashes come through, highest load), Vivid (Normal with saturation 150 %).
+- Movies, Sports, Games and Music are gone: Calm replaces Movies, Dynamic the other three. No preset raises the air budget any more.
+- English names of the two Latvian state holidays say so: "Latvian Remembrance Day", "Latvian Independence Day". Latvian names are unchanged.
+
+### Notes
+
+- Sync still shows while the strip waits for the TV, so capture automations on Mode = Sync are unaffected.
+- An automation that expects Mode = Light on an off strip now sees Off.
+- The z2m page and the `mode` field on the state topic are unchanged.
+- An explicit "on" (voice, automation) to a streaming strip still flashes: z2m forwards it.
+- Needs Home Assistant 2025.10 or newer (`default_entity_id`).
+- The new defaults apply on restart unless `huelink.config.json` sets those fields. Pick Normal in HA to apply them without one.
+- With `locale: "en"`, automations that select the two renamed effects by name need the new names.
+- Automations that select Movies, Sports, Games or Music need the new preset names.
+- Existing installs keep their entity ids. Delete the HueLink device in HA and restart zigbee2mqtt to get the new ones.
+- `huelink-lib/` changed: restart zigbee2mqtt. `huelink_version` shows 1.3.4 when it has.
+
 ## 1.3.3
 
 Sync and effects no longer flash the strip's ordinary light when they start, including after a trip in the middle of a film.

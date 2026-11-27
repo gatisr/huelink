@@ -51,15 +51,15 @@ test("the shipped defaults are the ones that were measured", () => {
     // `DEFAULTS.fps` would pass however the file is edited, which is exactly
     // the edit this test exists to catch.
     assert.equal(MAX_FPS, 5);
-    assert.equal(PACER.fps, 5);
+    assert.equal(PACER.fps, 3);
     assert.equal(PACER.maxFps, 5);
     assert.equal(PACER.occupancyBudget, 0.35);
     assert.equal(PACER.maxPerWindow, 2);
     assert.equal(PACER.windowMs, 100);
-    assert.equal(PACER.smoothingFactor, 1.15);
-    assert.equal(PACER.bigChangeThreshold, 6);
-    assert.equal(PACER.maxFastPerSec, 1);
-    assert.equal(PACER.fastSmoothingMs, 50);
+    assert.equal(PACER.smoothingFactor, 1.05);
+    assert.equal(PACER.bigChangeThreshold, 4);
+    assert.equal(PACER.maxFastPerSec, 4);
+    assert.equal(PACER.fastSmoothingMs, 20);
 });
 
 test("the burst ships OFF, by every switch that can turn it off", () => {

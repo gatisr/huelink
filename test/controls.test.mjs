@@ -47,21 +47,21 @@ test("a slider sent nonsense says no rather than taking NaN", () => {
     assert.equal(pacer.setTunable("maxFps", 50), false);
 });
 
-test("default install: pacer, stats and config defaults are the pre-1.3.0 values", () => {
+test("default install: pacer, stats and config defaults are the 1.3.4 values", () => {
     // Literals on purpose: changing a default must mean changing this test.
     for (const key of Object.keys(DEFAULTS)) {
         if (key in CONFIG_DEFAULTS) assert.equal(CONFIG_DEFAULTS[key], DEFAULTS[key], key);
     }
     const pacer = new Pacer(CONFIG_DEFAULTS);
-    assert.equal(pacer.fps, 5);
+    assert.equal(pacer.fps, 3);
     assert.equal(pacer.maxFps, 5);
     assert.equal(pacer.occupancyBudget, 0.35);
     assert.equal(pacer.maxPerWindow, 2);
     assert.equal(DEFAULTS.windowMs, 100);
-    assert.equal(pacer.smoothingFactor, 1.15);
-    assert.equal(pacer.bigChangeThreshold, 6);
-    assert.equal(pacer.fastSmoothingMs, 50);
-    assert.equal(pacer.maxFastPerSec, 1);
+    assert.equal(pacer.smoothingFactor, 1.05);
+    assert.equal(pacer.bigChangeThreshold, 4);
+    assert.equal(pacer.fastSmoothingMs, 20);
+    assert.equal(pacer.maxFastPerSec, 4);
     assert.equal(pacer.burstFps, 0);
     assert.equal(pacer.stats().occupancyBudgetPct, 35);
 });
@@ -69,7 +69,7 @@ test("default install: pacer, stats and config defaults are the pre-1.3.0 values
 test("the ceiling permits a frame rate but never raises it", () => {
     // maxFps is what MAY be asked for, not what IS asked for.
     const pacer = new Pacer({ ...CONFIG_DEFAULTS, maxFps: 25 });
-    assert.equal(pacer.fps, 5);
+    assert.equal(pacer.fps, 3);
     assert.equal(pacer.occupancyBudget, 0.35);
     assert.equal(pacer.maxPerWindow, 2);
     // The test fixture's ceiling reaches the z2m slider.

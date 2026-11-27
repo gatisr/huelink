@@ -123,7 +123,8 @@ test("Throttle: first at once, then one per window, with the count left out", ()
 });
 
 test("Pacer: lastSkip says why a frame was held back", () => {
-    const pacer = new Pacer({ fps: 5 });
+    // Threshold pinned: `nudge` below must stay under it whatever the default.
+    const pacer = new Pacer({ fps: 5, bigChangeThreshold: 6 });
     const still = Array(7).fill({ r: 20, g: 20, b: 20 });
     const lit = Array(7).fill({ r: 250, g: 20, b: 20 });
     // Visible, but under the scene-cut threshold: it must wait for the clock.

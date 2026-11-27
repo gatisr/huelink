@@ -96,7 +96,8 @@ export const DEFAULTS = {
      * Saturation multiplier applied to each frame before encoding. 1.0 is
      * neutral (pixels unchanged); it costs no coordinator time.
      */
-    saturation: SATURATION.default,
+    // Not `SATURATION.default` (neutral, 1.0): the Normal preset is slightly vivid since 1.3.4.
+    saturation: 1.05,
     /** How long a source stays live without a UDP packet. */
     sourceTtlMs: 1000,
     /** Last segment of the MQTT topic (base_topic/huelink). */

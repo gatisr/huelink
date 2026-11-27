@@ -12,7 +12,7 @@
 import { MODES } from "./arbiter.mjs";
 import { CONFIG } from "./config.mjs";
 import { SATURATION_PCT } from "./huepack.mjs";
-import { KNOBS, MODE_LABEL, PRESETS, categoryOf } from "./huelink-ui.mjs";
+import { ACTIVITIES, KNOBS, MODE_LABEL, PRESETS, categoryOf } from "./huelink-ui.mjs";
 import { t } from "./i18n/index.mjs";
 import { LIMITS } from "./pacer.mjs";
 
@@ -31,10 +31,11 @@ export const RETIRED = [
 /**
  * Mode select, effect select, knobs and the status, as `[kind, id, payload]`.
  * There is deliberately NO power switch: power is the strip's own HA `light`
- * entity, and a second switch beside it would mean two places to turn the
- * thing off.
+ * entity, and a second switch beside it could disagree with it. The mode
+ * select's "Off" option is not one: it is a view of the same power flag, so
+ * the one control that knows what the strip is doing can also stop it.
  */
-export function discoveryEntities({ stateTopic, commandTopic, device, effectOptions }) {
+export function discoveryEntities({ stateTopic, commandTopic, availabilityTopic, device, effectOptions }) {
     /** A `number` slider entity: `[kind, id, payload]` like the literals below. */
     const slider = (id, haKey, { value, command, limits, unit, icon, expert }) => [
         "number",
@@ -58,6 +59,9 @@ export function discoveryEntities({ stateTopic, commandTopic, device, effectOpti
         },
     ];
 
+    // Off is a view of power, not a fourth arbiter mode. `armed` keeps "Sync"
+    // shown while the strip is dark waiting for the TV.
+    const off = JSON.stringify(t("status.off"));
     let entities = [
         [
             "select",
@@ -66,10 +70,10 @@ export function discoveryEntities({ stateTopic, commandTopic, device, effectOpti
                 name: t("ha.mode"),
                 unique_id: `huelink_${CONFIG.name}_mode_select`,
                 state_topic: stateTopic,
-                value_template: "{{ value_json.mode }}",
+                value_template: `{{ value_json.mode if value_json.power == 'ON' or value_json.armed else ${off} }}`,
                 command_topic: commandTopic,
-                command_template: '{"mode": {{ value | tojson }}}',
-                options: MODES.map((m) => MODE_LABEL[m]),
+                command_template: `{% if value == ${off} %}{"power": "OFF"}{% else %}{"mode": {{ value | tojson }}}{% endif %}`,
+                options: [t("status.off"), ...MODES.map((m) => MODE_LABEL[m])],
                 icon: "mdi:tune-variant",
                 device,
             },
@@ -164,6 +168,22 @@ export function discoveryEntities({ stateTopic, commandTopic, device, effectOpti
             },
         ],
         [
+            // `status` as a fixed word: card conditions and automations
+            // must not depend on the locale or the wording.
+            "sensor",
+            "activity",
+            {
+                name: t("ha.activity"),
+                unique_id: `huelink_${CONFIG.name}_activity`,
+                state_topic: stateTopic,
+                value_template: "{{ value_json.activity }}",
+                device_class: "enum",
+                options: ACTIVITIES,
+                icon: "mdi:state-machine",
+                device,
+            },
+        ],
+        [
             // From `breaker`, not from the translated `status` text, so an
             // automation ("tell me when the strip needs me") survives a
             // locale or wording change.
@@ -187,6 +207,7 @@ export function discoveryEntities({ stateTopic, commandTopic, device, effectOpti
                 state_topic: stateTopic,
                 value_template: "{{ value_json.fps_real }}",
                 unit_of_measurement: "fps",
+                state_class: "measurement",
                 icon: "mdi:speedometer-medium",
                 device,
             },
@@ -236,6 +257,7 @@ export function discoveryEntities({ stateTopic, commandTopic, device, effectOpti
                 state_topic: stateTopic,
                 value_template: "{{ value_json.pacer.occupancyPct }}",
                 unit_of_measurement: "%",
+                state_class: "measurement",
                 icon: "mdi:gauge",
                 device,
             },
@@ -261,6 +283,7 @@ export function discoveryEntities({ stateTopic, commandTopic, device, effectOpti
                 state_topic: stateTopic,
                 value_template: "{{ value_json.pacer.fpsCeiling }}",
                 unit_of_measurement: "fps",
+                state_class: "measurement",
                 icon: "mdi:arrow-collapse-up",
                 device,
             },
@@ -301,8 +324,24 @@ export function discoveryEntities({ stateTopic, commandTopic, device, effectOpti
     // same table as the z2m device page. `status` has none on purpose: it is
     // where the breaker state shows. `categoryOf` throws on unknown ids, so
     // new entities must be categorised.
+    //
+    // `default_entity_id` (HA 2025.10+) instead of the id HA would derive from
+    // the translated name, so a shared dashboard works in every locale. Used
+    // only when HA first registers the entity.
+    const slug = CONFIG.name.toLowerCase().replace(/[^a-z0-9_]+/g, "_");
+    // z2m's own `bridge/state`: without it every card keeps its last state while z2m is down.
+    const availability = [{ topic: availabilityTopic, value_template: "{{ value_json.state }}" }];
     return entities.map(([kind, id, cfg]) => {
         const category = categoryOf(id);
-        return [kind, id, category ? { ...cfg, entity_category: category } : cfg];
+        return [
+            kind,
+            id,
+            {
+                ...cfg,
+                default_entity_id: `${kind}.${slug}_${id}`,
+                availability,
+                ...(category ? { entity_category: category } : {}),
+            },
+        ];
     });
 }

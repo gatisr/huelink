@@ -9,8 +9,8 @@
   "effect.valentines": "Holiday: Valentine's Day",
   "effect.easter": "Holiday: Easter",
   "effect.ligo": "Holiday: Midsummer",
-  "effect.lacplesis": "Holiday: Remembrance Day",
-  "effect.independence": "Holiday: Independence Day",
+  "effect.lacplesis": "Holiday: Latvian Remembrance Day",
+  "effect.independence": "Holiday: Latvian Independence Day",
   "effect.halloween": "Holiday: Halloween",
   "effect.romance": "Mood: Romance",
   "effect.fairies": "Mood: Fairy Lights",
@@ -87,6 +87,7 @@
   "ha.cutMs": "Scene cut fade",
   "ha.cutPerSec": "Scene cuts per second",
   "ha.preset": "Preset",
+  "ha.activity": "Activity",
   "ha.saturation": "Saturation",
 
   "label.effectCatalog": "the effect catalog",

@@ -159,3 +159,7 @@ Nothing here is broken, but most of it needs something to talk to, and that is w
 These tools are not part of `npm test`. That suite is pure Node with no rig and no network, which is why it can be the gate (`docs/TESTING.md`); the bench is what you reach for when a number or a byte layout is in question.
 
 The one rule they are all held to: a tool must not go stale again. Each imports the real `extension/` code and `CONFIG` rather than copies, so a rename breaks it loudly at import time instead of silently testing something that no longer exists.
+
+## `dashboard-image.sh` — the four-mode picture in the README
+
+Rebuilds `docs/img/dashboard.webp`. Save a fresh screenshot of the dashboard card as `docs/img/dashboard-<off|light|effect|sync>.png` and run `tools/dashboard-image.sh`. Each PNG is trimmed to its cards plus an even margin, so captures framed differently still line up, then stored as lossless WebP and removed; the four panels are joined in one row with the mode named above each. Needs `ffmpeg` (with `drawtext`) and `cwebp`; `FONT=/path/to/font` overrides the macOS default.

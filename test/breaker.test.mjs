@@ -1279,7 +1279,8 @@ async function testHueLinkBrightnessNeverInterruptsOrLights() {
 
     // Becoming an ordinary light: now the strip is told, once.
     await h.link.setMode(MODE_LABEL.light);
-    assert.deepStrictEqual(toStrip().filter((p) => "brightness" in p), [{ brightness: 51 }]);
+    // With the "on" that ends the stream, not as a command of its own.
+    assert.deepStrictEqual(toStrip().filter((p) => "brightness" in p), [{ state: "ON", brightness: 51 }]);
     // As a light, the slider is an ordinary command.
     await command(h, { brightness: 80 });
     assert.deepStrictEqual(toStrip().at(-1), { brightness: 203 });

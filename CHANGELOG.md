@@ -4,6 +4,20 @@ All notable changes to HueLink are recorded here. The format follows [Keep a Cha
 
 `VERSION` in `extension/huelink.mjs` and `version` in `package.json` are the same number and are bumped together.
 
+## 1.4.1
+
+Switching from Sync or Effect to Light now gives a light.
+
+### Fixed
+
+- **Sync to Light left the strip on the last picture.** A stream starts without an "on" (1.3.3), and the bare "on" sent when it ended did not bring the ordinary light back; pressing Effect and then Light did.
+- Leaving a stream for Light now always sends the "on", together with the light's own brightness and colour.
+
+### Notes
+
+- A gradient scene comes back as its one colour after a stream.
+- Only `huelink.mjs` changed: saving the extension is enough. `huelink_version` shows 1.4.1 when it has loaded.
+
 ## 1.4.0
 
 Your own preset and your own effect, set up in Home Assistant and kept across a restart. One brightness for every mode.

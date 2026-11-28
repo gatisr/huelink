@@ -163,7 +163,7 @@ So `light()` keeps `stripState` — the power the strip was last told to take, o
 
 A stream starts with no "on", because the strip obeys one even mid-stream and shows its last ordinary colour until the next frame. That left the light entity reading "off" beside a lit strip, and a tap on a card that reads "off" sends exactly that "on".
 
-So `showOn()` publishes `state: "ON"` into z2m's state cache only (`publishEntityState`), with no command to the strip. `stripState` is not touched: it describes the strip's own on/off, which is still off, so a later `light("ON")` is not suppressed. The echo is recognised by `shownOnAt` and dropped before the breaker's proof-of-life check, because no strip acked it. Every way out of a stream sends a real command (a forced "off", or "on" for light), so the entity is true again the moment the stream ends.
+So `showOn()` publishes `state: "ON"` into z2m's state cache only (`publishEntityState`), with no command to the strip. `stripState` is not touched: it describes the strip's own on/off, which is still off, so a later `light("ON")` is not suppressed. The echo is recognised by `shownOnAt` and dropped before the breaker's proof-of-life check, because no strip acked it. Every way out of a stream sends a real command (a forced "off", or for light a forced "on" carrying the light's own brightness and colour, see `#look`), so the entity is true again the moment the stream ends.
 
 Not covered: an explicit "on" sent to a streaming strip (voice, an automation) still reaches it through z2m and still flashes. The extension cannot stop z2m forwarding a `/set`.
 

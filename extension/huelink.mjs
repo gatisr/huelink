@@ -57,7 +57,7 @@ import {
  * machine that matters. Instead it is EXPORTED, and `test/version.test.mjs`
  * fails the build if it ever disagrees with `package.json`.
  */
-export const VERSION = "1.4.0";
+export const VERSION = "1.4.1";
 
 /** Knobs with a slider: the file only sets their startup value (a live reload would fight the slider). */
 const SLIDER_OWNED = new Set(["occupancyBudget", ...KNOBS.map((k) => k.knob)]);
@@ -1019,9 +1019,10 @@ export default class HueLink {
      *
      * @param {"ON"|"OFF"} state
      * @param {boolean} [force]  send even if the strip is already reported so
+     * @param {object} [extra]   more keys for the same command (see `#look`)
      * @returns {boolean} whether the strip is now known to be in `state`
      */
-    async light(state, force = false) {
+    async light(state, force = false, extra = {}) {
         if (state === this.stripState && !force) return true;
         // Recorded BEFORE the publish, not after: the echo of this very
         // command can arrive while the `await` is still pending, and a guard
@@ -1029,7 +1030,7 @@ export default class HueLink {
         // the strip would be left stuck in a state it was never told about.
         const previous = this.stripState;
         this.stripState = state;
-        const payload = JSON.stringify({ state });
+        const payload = JSON.stringify({ state, ...extra });
         // Noted BEFORE the publish for the same reason as `stripState`: the
         // echo can be back before the `await` returns. An entry left behind by
         // a failed publish expires by itself.
@@ -1109,7 +1110,11 @@ export default class HueLink {
             // Same way back, but the light stays on. Only reached when the
             // user chose light themselves.
             await this.stream.stop();
-            if (!(await this.light("ON"))) return false;
+            // Out of a stream the "on" is forced and carries the light's own
+            // look: a bare "on" left the strip showing the last frame, and
+            // none at all was sent when the strip already read "on".
+            if (!(await this.light("ON", wasStreaming, wasStreaming ? this.#look() : {}))) return false;
+            if (wasStreaming) this.levelDirty = false; // `#look` carried the level
             await this.#pushBrightness();
         } else if (!this.stream.running) {
             // Into the stream WITHOUT an "on". Tested on the strip: frames
@@ -1413,6 +1418,25 @@ export default class HueLink {
         const x = toFinite(s.color?.x);
         const y = toFinite(s.color?.y);
         return x !== null && y !== null ? xyToHex(x, y) : null;
+    }
+
+    /**
+     * The ordinary light's brightness and colour, from z2m's state cache, to
+     * send with the "on" that ends a stream. Brightness is always there: with
+     * a colour and no brightness z2m drops `state` for a light it believes is
+     * on, and `showOn` made it believe exactly that.
+     *
+     * shortcut: a gradient scene comes back as its one cached colour; resend `gradient` if that matters.
+     */
+    #look() {
+        const s = this.state.get(this.device) ?? {};
+        const look = { brightness: Math.round(this.brightness * 254) };
+        const mired = toFinite(s.color_temp);
+        const x = toFinite(s.color?.x);
+        const y = toFinite(s.color?.y);
+        if (s.color_mode === "color_temp" && mired > 0) look.color_temp = mired;
+        else if (x !== null && y !== null) look.color = { x, y };
+        return look;
     }
 
     /** `custom_*` keys of a command. Every refusal is said out loud, like the knobs. */

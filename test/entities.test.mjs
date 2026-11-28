@@ -32,7 +32,7 @@ const DEVICE_ID = "0x00178801aabbccdd";
 /**
  * A started extension with stubbed z2m, recording what it published.
  */
-async function started() {
+async function started(cache = { state: "ON" }) {
     const deviceOptions = { ID: DEVICE_ID, friendly_name: CONFIG.device };
     const log = { info: [], error: [], warning: [], debug: [] };
     const published = [];
@@ -50,7 +50,7 @@ async function started() {
     const link = new HueLink(
         { resolveEntity: () => device },
         { publish: async (topic, payload, options) => published.push({ topic, payload, options }) },
-        { get: () => ({ state: "ON" }) },
+        { get: () => cache },
         async () => {},
         {
             onMQTTMessage() {},
@@ -225,4 +225,20 @@ test("our device points at the strip's z2m device", async (t) => {
         assert.ok([main, `${main}_sync`, `${main}_effects`].includes(own), `${id} is on an unknown device ${own}`);
         assert.equal(typeof payload.device.name, "string", id);
     }
+});
+
+test("leaving a stream for light sends a forced on with the light's own look", async (t) => {
+    const h = await started({ state: "ON", brightness: 127, color_mode: "xy", color: { x: 0.3, y: 0.4 } });
+    t.after(() => h.link.stop());
+
+    h.link.sources.sync.put(Array.from({ length: CONFIG.segments }, () => ({ r: 255, g: 0, b: 0 })));
+    await h.link.setMode("sync");
+    assert.equal(h.link.output, "sync");
+    // The strip already reads "on": the guard in `light` must not swallow this one.
+    h.link.stripState = "ON";
+    h.published.length = 0;
+    await h.link.setMode("light");
+
+    const sets = h.published.filter((p) => p.topic === `${CONFIG.device}/set`).map((p) => JSON.parse(p.payload));
+    assert.deepEqual(sets, [{ state: "ON", brightness: 127, color: { x: 0.3, y: 0.4 } }]);
 });
